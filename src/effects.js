@@ -22,6 +22,9 @@ export const distortionUniforms = {
 	uSegEast: { value: new Vector2( 1, 0 ) },
 	uSegNorth: { value: new Vector2( 0, 1 ) },
 	uSegHalf: { value: new Vector2( 1, 1 ) },
+	// water: sea-classified ground sinks to a basin under the surface layer
+	uWaterOn: { value: 0 },
+	uWaterY: { value: 0 },
 };
 
 export const EFFECTS = [
@@ -51,7 +54,38 @@ uniform int uEffect;
 uniform float uStrength;
 uniform float uRadius;
 uniform vec3 uCenter;
+uniform sampler2D uSegTex;
+uniform vec2 uSegCenter;
+uniform vec2 uSegEast;
+uniform vec2 uSegNorth;
+uniform vec2 uSegHalf;
+uniform float uWaterOn;
+uniform float uWaterY;
 varying vec3 vRingWorld;
+
+// how strongly the coverage texture reads "water" at a world position
+float ringWaterMask( vec2 xz ) {
+
+	vec2 rel = xz - uSegCenter;
+	vec2 uv = vec2( dot( rel, uSegEast ) / uSegHalf.x, dot( rel, uSegNorth ) / uSegHalf.y ) * 0.5 + 0.5;
+	if ( uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ) return 0.0;
+	vec4 seg = texture2D( uSegTex, uv );
+	return seg.a * smoothstep( 0.75, 0.9, seg.b ) * ( 1.0 - smoothstep( 0.35, 0.5, seg.r ) );
+
+}
+
+// sea-classified ground sinks into a basin; only near-sea-level geometry
+// drops, so bridge decks and masts over water keep their height
+vec3 ringWaterDrop( vec3 p ) {
+
+	if ( uWaterOn < 0.5 ) return p;
+	float w = ringWaterMask( p.xz );
+	if ( w <= 0.0 ) return p;
+	w *= 1.0 - smoothstep( uWaterY + 2.5, uWaterY + 7.0, p.y );
+	p.y -= 7.0 * w;
+	return p;
+
+}
 
 float ringHash( vec2 p ) {
 
@@ -138,7 +172,7 @@ vec3 ringDistort( vec3 p ) {
 
 const VERTEX_PROJECT = /* glsl */ `
 vec4 ringWorldPos = modelMatrix * vec4( transformed, 1.0 );
-ringWorldPos.xyz = ringDistort( ringWorldPos.xyz );
+ringWorldPos.xyz = ringWaterDrop( ringDistort( ringWorldPos.xyz ) );
 vRingWorld = ringWorldPos.xyz;
 vec4 mvPosition = viewMatrix * ringWorldPos;
 gl_Position = projectionMatrix * mvPosition;
@@ -241,7 +275,7 @@ export function patchMaterial( material ) {
 	};
 
 	// Constant suffix lets three.js share one compiled program across all tiles.
-	material.customProgramCacheKey = () => 'ring-distort-4';
+	material.customProgramCacheKey = () => 'ring-distort-5';
 	material.needsUpdate = true;
 
 }

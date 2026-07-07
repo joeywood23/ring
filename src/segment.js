@@ -106,6 +106,7 @@ export class Segmentation {
 	// promise that resolves when the data is ready (check .ready for success).
 	ensureData() {
 
+		this._syncFrame(); // shader consumers need the world→UV mapping too
 		if ( ! this.ready && ! this._building ) this._buildPromise = this._build();
 		return this._buildPromise || Promise.resolve();
 

@@ -32,6 +32,7 @@ import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
 import { Segmentation } from './segment.js';
 import { VoxelWorld } from './voxel.js';
+import { WaterLayer } from './water.js';
 
 const KEY_STORAGE = 'ring_google_tiles_key';
 // Referrer-restricted public key; a key saved via the modal takes precedence.
@@ -47,7 +48,7 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park, segments, voxels;
+let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park, segments, voxels, water;
 let dropAs = 'skate'; // which mode the pending drop-in enters
 const playArea = new PlayArea();
 const clock = new Clock();
@@ -168,6 +169,7 @@ function init( apiKey ) {
 		jumpTo( LOCATIONS[ 0 ] );
 		playArea.configure( latLonToLocal );
 		minimap.configureExtent( playArea );
+		water.start(); // fetches coverage, then floods the segmented sea
 
 	} );
 
@@ -269,6 +271,7 @@ function init( apiKey ) {
 
 	segments = new Segmentation( { playArea } );
 	voxels = new VoxelWorld( { scene, tilesGroup: tiles.group, segments, playArea } );
+	water = new WaterLayer( { scene, playArea, segments, tilesGroup: tiles.group } );
 
 	bindUI();
 	window.addEventListener( 'resize', onResize );
@@ -622,8 +625,10 @@ function animate() {
 
 	if ( segments.enabled ) updateSurfaceHUD( mode );
 
-	// pump voxel builds; the fine patch follows the player or map view target
-	voxels.update( mode ? mode.pos : currentViewTarget( _voxFocus ) );
+	// voxel builds and water waves both track the player or map view target
+	const focus = mode ? mode.pos : currentViewTarget( _voxFocus );
+	voxels.update( focus );
+	water.update( focus );
 
 	targeter.update( dt );
 	updateProgress();
@@ -870,7 +875,7 @@ function updateAttributions() {
 	if ( ! tiles || ! tiles.getAttributions ) return;
 	const parts = tiles.getAttributions( [] ).map( ( a ) => a.value );
 	if ( detail && detail.enabled ) parts.push( detail.attribution );
-	if ( segments && segments.enabled ) parts.push( 'OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors' );
+	if ( segments && ( segments.enabled || segments.ready ) ) parts.push( 'OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors' );
 	document.getElementById( 'attributions' ).textContent = parts.join( ' · ' );
 
 }
