@@ -12,6 +12,9 @@ export const distortionUniforms = {
 	// upscale zone: photogrammetry is muted inside so overlay models pop
 	uZoneCenter: { value: new Vector3() },
 	uZoneRadius: { value: 0 },
+	// voxel world: photogrammetry is discarded inside this zone (see voxel.js)
+	uVoxelCenter: { value: new Vector2() },
+	uVoxelRadius: { value: 0 },
 	// segmentation coverage texture spanning the play area (see segment.js)
 	uSegTex: { value: null },
 	uSegStrength: { value: 0 },
@@ -146,6 +149,8 @@ uniform float uTime;
 uniform int uColorMode;
 uniform vec3 uZoneCenter;
 uniform float uZoneRadius;
+uniform vec2 uVoxelCenter;
+uniform float uVoxelRadius;
 uniform sampler2D uSegTex;
 uniform float uSegStrength;
 uniform vec2 uSegCenter;
@@ -230,13 +235,13 @@ export function patchMaterial( material ) {
 		shader.fragmentShader = FRAGMENT_DECLARATIONS + shader.fragmentShader
 			.replace(
 				'#include <opaque_fragment>',
-				'#include <opaque_fragment>\n\tgl_FragColor.rgb = ringZone( ringSegment( ringColor( gl_FragColor.rgb ) ) );'
+				'if ( uVoxelRadius > 0.0 && length( vRingWorld.xz - uVoxelCenter ) < uVoxelRadius ) discard;\n\t#include <opaque_fragment>\n\tgl_FragColor.rgb = ringZone( ringSegment( ringColor( gl_FragColor.rgb ) ) );'
 			);
 
 	};
 
 	// Constant suffix lets three.js share one compiled program across all tiles.
-	material.customProgramCacheKey = () => 'ring-distort-3';
+	material.customProgramCacheKey = () => 'ring-distort-4';
 	material.needsUpdate = true;
 
 }

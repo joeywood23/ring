@@ -83,6 +83,20 @@
     </div>
 
     <div class="section">
+      <div class="section-title">Voxel world</div>
+      <label class="check-row">
+        <input id="voxel" type="checkbox" />
+        <span>Voxelize the mesh</span>
+      </label>
+      <label class="slider-row">
+        <span>Voxel size</span>
+        <input id="voxel-size" type="range" min="3" max="12" step="1" value="6" />
+        <span id="voxel-size-val" class="slider-val">6</span>
+      </label>
+      <div id="voxel-status" class="section-note"></div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Skate physics</div>
       <div id="physics-controls"></div>
       <button id="physics-reset">Reset defaults</button>

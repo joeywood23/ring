@@ -31,6 +31,7 @@ import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
 import { Segmentation } from './segment.js';
+import { VoxelWorld } from './voxel.js';
 
 const KEY_STORAGE = 'ring_google_tiles_key';
 // Referrer-restricted public key; a key saved via the modal takes precedence.
@@ -46,7 +47,7 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park, segments;
+let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park, segments, voxels;
 let dropAs = 'skate'; // which mode the pending drop-in enters
 const playArea = new PlayArea();
 const clock = new Clock();
@@ -152,8 +153,8 @@ function init( apiKey ) {
 
 		} );
 
-		// tiles streamed in while riding or aiming need raycast acceleration
-		if ( groundMode() || ( targeter && targeter.active ) ) ensureBVH( tileScene );
+		// tiles streamed in while riding, aiming, or voxelizing need raycast acceleration
+		if ( groundMode() || ( targeter && targeter.active ) || ( voxels && voxels.enabled ) ) ensureBVH( tileScene );
 
 	} );
 
@@ -266,6 +267,7 @@ function init( apiKey ) {
 	} );
 
 	segments = new Segmentation( { playArea } );
+	voxels = new VoxelWorld( { scene, tilesGroup: tiles.group, segments } );
 
 	bindUI();
 	window.addEventListener( 'resize', onResize );
@@ -553,6 +555,7 @@ function flyToView( camPos, target ) {
 
 const _dir = new Vector3();
 const _center = new Vector3();
+const _voxFocus = new Vector3();
 
 function updateSurfaceHUD( mode ) {
 
@@ -617,6 +620,9 @@ function animate() {
 	}
 
 	if ( segments.enabled ) updateSurfaceHUD( mode );
+
+	// voxel zone follows the player, or the map view target when flying free
+	if ( voxels.enabled ) voxels.update( mode ? mode.pos : currentViewTarget( _voxFocus ) );
 
 	targeter.update( dt );
 	updateProgress();
@@ -768,8 +774,30 @@ function bindUI() {
 
 		document.getElementById( 'segment-status' ).textContent =
 			segments.enabled ? segments.status : '';
+		document.getElementById( 'voxel-status' ).textContent =
+			voxels.enabled ? voxels.status : '';
 
 	}, 1000 );
+
+	document.getElementById( 'voxel' ).addEventListener( 'change', ( e ) => {
+
+		if ( e.target.checked ) ensureBVH( tiles.group ); // height sampling needs it
+		voxels.setActive( e.target.checked );
+
+	} );
+
+	const voxelSize = document.getElementById( 'voxel-size' );
+	voxelSize.addEventListener( 'input', ( e ) => {
+
+		document.getElementById( 'voxel-size-val' ).textContent = e.target.value;
+
+	} );
+	voxelSize.addEventListener( 'change', ( e ) => {
+
+		voxels.setSize( parseInt( e.target.value, 10 ) ); // rebuild on release
+		e.target.blur();
+
+	} );
 
 	buildPhysicsControls();
 

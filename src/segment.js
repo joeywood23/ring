@@ -25,7 +25,7 @@ export const SEGMENT_COLORS = {
 	water: '#3aa5ff',
 };
 
-const CLASS_RGB = {
+export const CLASS_RGB = {
 	building: [ 255, 111, 97 ],
 	road: [ 139, 124, 246 ],
 	grass: [ 78, 203, 95 ],
@@ -91,6 +91,14 @@ export class Segmentation {
 			distortionUniforms.uSegStrength.value = 0;
 
 		}
+
+	}
+
+	// build the coverage data without turning the visual tint on — for
+	// consumers like the voxel world that only need classify()
+	ensureData() {
+
+		if ( ! this.ready && ! this._building ) this._build();
 
 	}
 
