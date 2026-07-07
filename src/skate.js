@@ -15,6 +15,7 @@ import {
 } from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { SkaterRig } from './skater.js';
+import { SkateAudio } from './sound.js';
 
 // Accelerated raycasts against the photogrammetry mesh — a street-level tile
 // has tens of thousands of triangles, far too many for per-triangle testing.
@@ -108,6 +109,8 @@ export class SkateMode {
 
 		this._raycaster = new Raycaster();
 		this._raycaster.firstHitOnly = true;
+
+		this.audio = new SkateAudio();
 
 		this._buildBoard();
 
@@ -260,6 +263,7 @@ export class SkateMode {
 		fog.far = 50000;
 
 		this.active = true;
+		this.audio.start();
 		this.hud.root.classList.remove( 'hidden' );
 		if ( document.activeElement ) document.activeElement.blur();
 
@@ -272,6 +276,7 @@ export class SkateMode {
 		if ( ! this.active ) return;
 
 		this.active = false;
+		this.audio.stop();
 		this.keys.clear();
 		this.scene.remove( this.board, this.shadow );
 
@@ -328,6 +333,7 @@ export class SkateMode {
 		for ( let i = 0; i < steps; i ++ ) this._physicsStep( h );
 
 		this._updateBoard( dt );
+		this._updateAudio( dt );
 		this._updateCamera( dt, false );
 		this._updateHUD();
 
@@ -353,6 +359,7 @@ export class SkateMode {
 				vel.y += JUMP_SPEED;
 				this.onGround = false;
 				this._jumpHeld = true;
+				this.audio.jump();
 
 			}
 
@@ -429,6 +436,7 @@ export class SkateMode {
 				if ( vn < 0 ) vel.addScaledVector( n, - vn );
 				this.groundNormal.copy( n );
 				this.onGround = true;
+				this.audio.land( - vn );
 
 			}
 
@@ -537,6 +545,26 @@ export class SkateMode {
 		this.shadow.material.opacity = 0.35 / ( 1 + height * 0.6 );
 		const s = 1 / ( 1 + height * 0.25 );
 		this.shadow.scale.set( s, s, s );
+
+	}
+
+	_updateAudio( dt ) {
+
+		const speed = this.vel.length();
+
+		// lateral slip: horizontal velocity not aligned with the board heading —
+		// the grip force that makes a carve is also what makes it heard
+		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+		_horiz.set( this.vel.x, 0, this.vel.z );
+		const slip = _horiz.addScaledVector( _fwd, - _horiz.dot( _fwd ) ).length();
+
+		this.audio.update( dt, {
+			grounded: this.onGround,
+			speed,
+			slip,
+			pushing: this.onGround && this.keys.has( 'KeyW' ),
+			braking: this.onGround && this.keys.has( 'KeyS' ) && speed > 0.3,
+		} );
 
 	}
 
