@@ -222,6 +222,25 @@ export class WaterLayer {
 
 	}
 
+	// JS mirror of the shader's waveHeight — floaters ride the same swells
+	surfaceAt( x, z ) {
+
+		const y = this.seaY + SEA_LIFT;
+		if ( ! this.active ) return y;
+
+		const t = distortionUniforms.uTime.value;
+		const d = Math.hypot( x - this._focus.x, z - this._focus.y );
+		const amp = 0.55 * Math.exp( - d / WAVE_RADIUS ) + 0.05;
+		const h =
+			Math.sin( x * 0.060 + z * 0.087 + t * 1.4 ) * 0.50 +
+			Math.sin( x * - 0.110 + z * 0.045 + t * 2.1 ) * 0.30 +
+			Math.sin( x * 0.024 + z * - 0.031 + t * 0.8 ) * 0.20 +
+			Math.sin( x * 0.31 + z * 0.23 + t * 2.8 ) * 0.08;
+
+		return y + h * amp;
+
+	}
+
 	update( focus ) {
 
 		if ( ! this.active ) return;

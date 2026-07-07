@@ -215,11 +215,19 @@ function init( apiKey ) {
 		balanceDot: document.getElementById( 'balance-dot' ),
 	};
 
+	// water interface for the modes — inert until the water layer is live
+	const sea = {
+		level: () => ( water && water.active ? water.seaY : null ),
+		surfaceAt: ( x, z ) => water.surfaceAt( x, z ),
+		isWater: ( x, z ) => segments && segments.ready && segments.classify( x, z ) === 'water',
+	};
+
 	skate = new SkateMode( {
 		scene,
 		camera,
 		playArea,
 		park,
+		sea,
 		audio,
 		hud,
 		tilesGroup: tiles.group,
@@ -242,6 +250,7 @@ function init( apiKey ) {
 		camera,
 		playArea,
 		park,
+		sea,
 		audio,
 		hud,
 		tilesGroup: tiles.group,

@@ -33,7 +33,80 @@ export class SkateAudio {
 
 		this.master = this.ctx.createGain();
 		this.master.gain.value = 0.6;
-		this.master.connect( this.ctx.destination );
+
+		// everything runs through this lowpass so submerging muffles the world
+		this.out = this.ctx.createBiquadFilter();
+		this.out.type = 'lowpass';
+		this.out.frequency.value = 20000;
+		this.master.connect( this.out );
+		this.out.connect( this.ctx.destination );
+
+	}
+
+	setUnderwater( on ) {
+
+		if ( ! this.ctx ) return;
+		this.out.frequency.setTargetAtTime( on ? 550 : 20000, this.ctx.currentTime, 0.12 );
+
+	}
+
+	// entering / leaving the water, scaled by impact speed
+	splash( impact = 1 ) {
+
+		if ( ! this.running ) return;
+
+		const t = this.ctx.currentTime;
+		const k = Math.min( impact / 8, 1 );
+
+		const body = this.ctx.createBufferSource();
+		body.buffer = this.noise;
+		body.playbackRate.value = 0.7;
+		const bodyFilter = this._filter( 'lowpass', 900, 0.7 );
+		const bodyGain = this.ctx.createGain();
+		bodyGain.gain.setValueAtTime( 0, t );
+		bodyGain.gain.linearRampToValueAtTime( 0.25 + 0.45 * k, t + 0.02 );
+		bodyGain.gain.exponentialRampToValueAtTime( 0.001, t + 0.45 );
+		body.connect( bodyFilter );
+		bodyFilter.connect( bodyGain );
+		bodyGain.connect( this.master );
+		body.start( t );
+		body.stop( t + 0.5 );
+
+		const spray = this.ctx.createBufferSource();
+		spray.buffer = this.noise;
+		const sprayFilter = this._filter( 'highpass', 1800, 0.7 );
+		const sprayGain = this.ctx.createGain();
+		sprayGain.gain.setValueAtTime( 0.12 + 0.15 * k, t );
+		sprayGain.gain.exponentialRampToValueAtTime( 0.001, t + 0.3 );
+		spray.connect( sprayFilter );
+		sprayFilter.connect( sprayGain );
+		sprayGain.connect( this.master );
+		spray.start( t );
+		spray.stop( t + 0.32 );
+
+	}
+
+	// one soft paddle stroke
+	stroke() {
+
+		if ( ! this.running ) return;
+
+		const t = this.ctx.currentTime;
+		const src = this.ctx.createBufferSource();
+		src.buffer = this.noise;
+		src.playbackRate.value = 0.45 + Math.random() * 0.15;
+
+		const filter = this._filter( 'bandpass', 420, 0.8 );
+		const gain = this.ctx.createGain();
+		gain.gain.setValueAtTime( 0, t );
+		gain.gain.linearRampToValueAtTime( 0.15, t + 0.06 );
+		gain.gain.exponentialRampToValueAtTime( 0.001, t + 0.35 );
+
+		src.connect( filter );
+		filter.connect( gain );
+		gain.connect( this.master );
+		src.start( t );
+		src.stop( t + 0.37 );
 
 	}
 

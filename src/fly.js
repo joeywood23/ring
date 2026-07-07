@@ -128,8 +128,9 @@ class PigeonRig {
 		let beat = false;
 		const k = 1 - Math.exp( - 8 * dt );
 
-		// wings: fold when perched, sweep back in a dive, beat when flapping
-		const foldTarget = s.perched ? 1 : s.diving ? 0.75 : 0;
+		// wings: fold when perched or swimming, sweep back in a dive, beat
+		// when flapping
+		const foldTarget = s.perched || s.swimming ? 1 : s.diving ? 0.75 : 0;
 		this._fold += ( foldTarget - this._fold ) * k;
 
 		if ( s.flapping && ! s.perched ) {
@@ -178,12 +179,13 @@ class PigeonRig {
 
 export class PigeonMode {
 
-	constructor( { scene, camera, tilesGroup, playArea, park, hud, audio, onExit } ) {
+	constructor( { scene, camera, tilesGroup, playArea, park, sea, hud, audio, onExit } ) {
 
 		this.scene = scene;
 		this.camera = camera;
 		this.tilesGroup = tilesGroup;
 		this.playArea = playArea;
+		this.sea = sea; // { level(), surfaceAt(x,z), isWater(x,z) }
 		this.hud = hud;
 		this.audio = audio;
 		this.onExit = onExit;
@@ -196,6 +198,7 @@ export class PigeonMode {
 		this.airspeed = 0;
 		this.vy = 0;
 		this.perched = false;
+		this.swimming = false;
 		this.lastGroundY = 0;
 		this.spawn = new Vector3();
 		this.spawnYaw = 0;
@@ -254,6 +257,7 @@ export class PigeonMode {
 		this.airspeed = CRUISE;
 		this.vy = 0;
 		this.perched = false;
+		this.swimming = false;
 		this.vel.set( 0, 0, 0 );
 		this.spawn.copy( this.pos );
 		this.spawnYaw = this.yaw;
@@ -286,6 +290,8 @@ export class PigeonMode {
 
 		this.active = false;
 		this.keys.clear();
+		this.swimming = false;
+		this.audio.setUnderwater( false );
 		this.scene.remove( this.body, this.shadow );
 		this.audio.stop();
 
@@ -314,6 +320,8 @@ export class PigeonMode {
 		this.airspeed = CRUISE;
 		this.vy = 0;
 		this.perched = false;
+		this.swimming = false;
+		this.audio.setUnderwater( false );
 		this.vel.set( 0, 0, 0 );
 
 	}
@@ -356,6 +364,13 @@ export class PigeonMode {
 		const { keys } = this;
 		const g = PHYSICS.gravity * 0.65; // birds run light
 
+		if ( this.swimming ) {
+
+			this._swimStep( h );
+			return;
+
+		}
+
 		if ( this.perched ) {
 
 			const turn = ( keys.has( 'KeyA' ) ? 1 : 0 ) - ( keys.has( 'KeyD' ) ? 1 : 0 );
@@ -368,6 +383,14 @@ export class PigeonMode {
 
 			const hit = this._groundHit( this.pos.x, this.pos.y, this.pos.z, 1.0, 10 );
 			if ( hit ) {
+
+				// waddled off a pier onto the sea → float, don't stand
+				if ( this._isSeaSurface( hit.point.y ) ) {
+
+					this._enterSwim( 0 );
+					return;
+
+				}
 
 				this.pos.y = hit.point.y;
 				this.lastGroundY = hit.point.y;
@@ -461,6 +484,14 @@ export class PigeonMode {
 			this.lastGroundY = hit.point.y;
 			if ( this.pos.y <= hit.point.y ) {
 
+				// the sea is not rigid: splash in — fast dives plunge deep
+				if ( this._isSeaSurface( hit.point.y ) ) {
+
+					this._enterSwim( Math.abs( this.vy ) );
+					return;
+
+				}
+
 				// touchdown: perch wherever you land
 				this.pos.y = hit.point.y;
 				this.audio.land( Math.min( Math.abs( this.vy ) * 0.5, 3 ) );
@@ -477,6 +508,118 @@ export class PigeonMode {
 
 	}
 
+	// --- swimming ------------------------------------------------------------------
+
+	_isSeaSurface( groundY ) {
+
+		if ( ! this.sea ) return false;
+		const sl = this.sea.level();
+		if ( sl === null ) return false;
+		return Math.abs( groundY - sl ) < 1.2 && this.sea.isWater( this.pos.x, this.pos.z );
+
+	}
+
+	_enterSwim( impact ) {
+
+		this.swimming = true;
+		this.perched = false;
+		this.airspeed = 0;
+		this.audio.splash( impact );
+		this.hud.hint.textContent =
+			'W paddle · Shift dive · Space rise / take off · A/D turn · S brake · R respawn · Esc exit';
+
+	}
+
+	_leaveSwim() {
+
+		this.swimming = false;
+		this.audio.setUnderwater( false );
+		this.hud.hint.textContent = HINT;
+
+	}
+
+	_swimStep( h ) {
+
+		const { keys, vel } = this;
+		const seaLevel = this.sea.level();
+		if ( seaLevel === null ) {
+
+			this._leaveSwim();
+			return;
+
+		}
+
+		const speed = vel.length();
+		const turn = ( keys.has( 'KeyA' ) ? 1 : 0 ) - ( keys.has( 'KeyD' ) ? 1 : 0 );
+		this.yaw += turn * 2.5 / ( 1 + speed / 6 ) * h;
+		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+
+		const surface = this.sea.surfaceAt( this.pos.x, this.pos.z ) - 0.06;
+		const atSurface = this.pos.y >= surface - 0.3;
+
+		if ( keys.has( 'KeyW' ) ) vel.addScaledVector( _fwd, ( atSurface ? 3 : 6 ) * h );
+		if ( keys.has( 'KeyS' ) && speed > 0.01 ) vel.multiplyScalar( Math.max( 0, 1 - 6 * h / speed ) );
+		if ( keys.has( 'ShiftLeft' ) || keys.has( 'ShiftRight' ) ) vel.y -= 7.5 * h;
+
+		if ( keys.has( 'Space' ) ) {
+
+			if ( atSurface ) {
+
+				// burst off the water into flight
+				this._leaveSwim();
+				this.vy = 3.6;
+				this.airspeed = Math.max( 5, Math.hypot( vel.x, vel.z ) );
+				this.audio.flap();
+				this.audio.splash( 1.5 );
+				return;
+
+			}
+
+			vel.y += 7.5 * h;
+
+		}
+
+		vel.y += 2.8 * h;                            // pigeons are corks
+		vel.multiplyScalar( Math.exp( - 1.0 * h ) ); // water drag
+
+		this.pos.addScaledVector( vel, h );
+		if ( this.playArea ) this.playArea.constrain( this.pos, vel, 10 );
+
+		const floor = seaLevel - 6.0;
+		if ( this.pos.y < floor ) {
+
+			this.pos.y = floor;
+			if ( vel.y < 0 ) vel.y = 0;
+
+		}
+
+		if ( this.pos.y >= surface ) {
+
+			this.pos.y = surface;
+			if ( vel.y > 0 ) vel.y = 0;
+
+		}
+
+		// shore rises above the sea → hop out and perch
+		const hit = this._groundHit( this.pos.x, this.pos.y, this.pos.z, 3, 12 );
+		if ( hit && hit.point.y > seaLevel + 0.15 && hit.point.y > this.pos.y - 0.5 &&
+			! this.sea.isWater( this.pos.x, this.pos.z ) ) {
+
+			this.pos.y = hit.point.y;
+			this.lastGroundY = hit.point.y;
+			this._leaveSwim();
+			this.perched = true;
+			this.vel.set( 0, 0, 0 );
+			this.audio.splash( 0.8 );
+			return;
+
+		}
+
+		this.lastGroundY = floor;
+		this.audio.setUnderwater( this.pos.y < seaLevel - 0.5 );
+
+	}
+
 	_updateBody( dt ) {
 
 		this.body.position.copy( this.pos );
@@ -490,11 +633,14 @@ export class PigeonMode {
 
 		const beat = this.rig.update( dt, {
 			perched: this.perched,
-			flapping,
+			swimming: this.swimming,
+			flapping: flapping && ! this.swimming,
 			diving,
 			speed: this.vel.length(),
-			pitch: this.perched ? 0 : MathUtils.clamp( Math.atan2( - this.vy, Math.max( this.airspeed, 3 ) ), - 0.6, 0.6 ),
-			bank: this.perched ? 0 : turn * - 0.5,
+			pitch: this.perched ? 0
+				: this.swimming ? MathUtils.clamp( - this.vel.y * 0.12, - 0.5, 0.5 )
+					: MathUtils.clamp( Math.atan2( - this.vy, Math.max( this.airspeed, 3 ) ), - 0.6, 0.6 ),
+			bank: this.perched || this.swimming ? 0 : turn * - 0.5,
 		} );
 		if ( beat ) this.audio.flap();
 
@@ -531,16 +677,18 @@ export class PigeonMode {
 
 		this.hud.speed.textContent = Math.round( this.vel.length() * 2.237 );
 		const { keys } = this;
-		this.hud.state.textContent = this.perched ? 'PERCH'
-			: ( keys.has( 'ShiftLeft' ) || keys.has( 'ShiftRight' ) ) ? 'DIVE'
-				: ( keys.has( 'KeyW' ) || keys.has( 'Space' ) ) ? 'FLAP' : 'GLIDE';
+		this.hud.state.textContent = this.swimming
+			? ( this.sea && this.pos.y < this.sea.level() - 0.5 ? 'DIVE' : 'FLOAT' )
+			: this.perched ? 'PERCH'
+				: ( keys.has( 'ShiftLeft' ) || keys.has( 'ShiftRight' ) ) ? 'DIVE'
+					: ( keys.has( 'KeyW' ) || keys.has( 'Space' ) ) ? 'FLAP' : 'GLIDE';
 
 	}
 
 	// audio hook: wind rises with airspeed
 	windSpeed() {
 
-		return this.perched ? 0 : this.airspeed;
+		return this.perched || this.swimming ? 0 : this.airspeed;
 
 	}
 

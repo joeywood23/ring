@@ -40,6 +40,7 @@ export class SkaterRig {
 
 		this.group = new Group();
 		this._pushPhase = 0;
+		this._swimPhase = 0;
 		this._joints = {};
 		this._targets = {};
 		this._hipsTarget = { y: 0.78, z: 0 };
@@ -131,7 +132,12 @@ export class SkaterRig {
 		set( T.armRFore, - 0.30, 0, 0 );
 
 		// --- mode overrides ---
-		if ( state.grinding ) {
+		if ( state.swimming ) {
+
+			this._swimPhase += dt * ( 3 + state.speed * 0.6 );
+			this._poseSwim( T, hips, this._swimPhase );
+
+		} else if ( state.grinding ) {
 
 			this._poseGrind( T, hips );
 
@@ -210,6 +216,31 @@ export class SkaterRig {
 		set( T.armLFore, - 0.5, 0, 0 );
 		set( T.armR, - 0.4, 0, 0.9 );
 		set( T.armRFore, - 0.5, 0, 0 );
+
+	}
+
+	// swimming: prone on the deck like a surfer paddling out, arms stroking
+	// in alternation
+	_poseSwim( T, hips, phase ) {
+
+		const strokeL = Math.sin( phase );
+		const strokeR = Math.sin( phase + Math.PI );
+
+		hips.y = 0.34;
+		hips.z = 0.04;
+		set( T.hips, 1.2, - 0.85, 0 );          // pelvis pitched prone
+		set( T.torso, - 0.4, 0.35, 0 );         // chest arched up out of the water
+		set( T.head, - 0.55, 0.55, 0 );
+		set( T.legL, - 0.2, 0.75, 0 );          // legs trailing behind
+		set( T.legLShin, 0.15, 0, 0 );
+		set( T.legLFoot, 0.3, - 0.25, 0 );
+		set( T.legR, - 0.25, 0.35, 0 );
+		set( T.legRShin, 0.2, 0, 0 );
+		set( T.legRFoot, 0.3, - 0.85, 0 );
+		set( T.armL, - 1.1 + strokeL * 0.9, 0, - 0.35 ); // alternating strokes
+		set( T.armLFore, - 0.35, 0, 0 );
+		set( T.armR, - 1.1 + strokeR * 0.9, 0, 0.35 );
+		set( T.armRFore, - 0.35, 0, 0 );
 
 	}
 

@@ -110,13 +110,14 @@ const DOWN = new Vector3( 0, - 1, 0 );
 
 export class SkateMode {
 
-	constructor( { scene, camera, tilesGroup, playArea, park, hud, audio, onExit } ) {
+	constructor( { scene, camera, tilesGroup, playArea, park, sea, hud, audio, onExit } ) {
 
 		this.scene = scene;
 		this.camera = camera;
 		this.tilesGroup = tilesGroup;
 		this.playArea = playArea;
 		this.park = park;
+		this.sea = sea; // { level(), surfaceAt(x,z), isWater(x,z) }
 		this.hud = hud; // { root, speed, state, balanceWrap, balanceDot }
 		this.onExit = onExit;
 
@@ -132,6 +133,8 @@ export class SkateMode {
 		this.grinding = null; // { rail, s, sign, spd }
 		this.balance = 0;
 		this.balanceVel = 0;
+		this.swimming = false;
+		this._strokeTimer = 0;
 		this.groundNormal = new Vector3( 0, 1, 0 );
 		this.lastGroundY = 0;
 		this.spawn = new Vector3();
@@ -300,10 +303,10 @@ export class SkateMode {
 		fog.far = 50000;
 
 		this.active = true;
+		this.swimming = false;
 		this.audio.start();
 		this.hud.root.classList.remove( 'hidden' );
-		this.hud.hint.textContent =
-			'W push · S brake · A/D carve · Shift manual · Space ollie · E step off · 1 ramp · 2 rail · U upscale · R respawn · Esc bail';
+		this._setRideHint();
 		if ( document.activeElement ) document.activeElement.blur();
 
 		this._updateCamera( 1, opts.snapCamera !== false );
@@ -316,6 +319,8 @@ export class SkateMode {
 
 		this.active = false;
 		this.grinding = null;
+		this.swimming = false;
+		this.audio.setUnderwater( false );
 		this.audio.stop();
 		this.keys.clear();
 		this.scene.remove( this.board, this.shadow );
@@ -346,7 +351,17 @@ export class SkateMode {
 		this.yaw = this.spawnYaw;
 		this.onGround = true;
 		this.grinding = null;
+		this.swimming = false;
+		this.audio.setUnderwater( false );
+		this._setRideHint();
 		this.lastGroundY = this.pos.y;
+
+	}
+
+	_setRideHint() {
+
+		this.hud.hint.textContent =
+			'W push · S brake · A/D carve · Shift manual · Space ollie · E step off · 1 ramp · 2 rail · U upscale · R respawn · Esc bail';
 
 	}
 
@@ -397,6 +412,13 @@ export class SkateMode {
 	}
 
 	_physicsStep( h ) {
+
+		if ( this.swimming ) {
+
+			this._swimStep( h );
+			return;
+
+		}
 
 		if ( this.grinding ) {
 
@@ -485,7 +507,17 @@ export class SkateMode {
 			this.lastGroundY = hit.point.y;
 			const groundY = hit.point.y;
 
-			if ( this.onGround ) {
+			// the segmented sea is not rigid: rolling or falling onto it swims
+			if ( this._isSeaSurface( groundY ) ) {
+
+				if ( this.onGround || this.pos.y <= groundY + 0.3 ) {
+
+					this._enterSwim( Math.max( - vel.y, 0 ) );
+					return;
+
+				}
+
+			} else if ( this.onGround ) {
 
 				const dy = groundY - this.pos.y;
 				if ( dy >= - SNAP_DOWN && dy <= STEP_UP ) {
@@ -519,6 +551,125 @@ export class SkateMode {
 
 		// fell off the mesh entirely
 		if ( this.pos.y < this.lastGroundY - 400 ) this.respawn();
+
+	}
+
+	// --- swimming ----------------------------------------------------------------
+
+	// is this ground height actually the sea surface here?
+	_isSeaSurface( groundY ) {
+
+		if ( ! this.sea ) return false;
+		const sl = this.sea.level();
+		if ( sl === null ) return false;
+		return Math.abs( groundY - sl ) < 1.2 && this.sea.isWater( this.pos.x, this.pos.z );
+
+	}
+
+	_enterSwim( impact ) {
+
+		this.swimming = true;
+		this.grinding = null;
+		this.manual = false;
+		this.onGround = false;
+		this._strokeTimer = 0;
+		this.audio.splash( impact );
+		this.hud.hint.textContent =
+			'W swim · Space rise / leap out · Shift dive · A/D turn · S brake · R respawn · Esc bail';
+
+	}
+
+	_leaveSwim() {
+
+		this.swimming = false;
+		this.audio.setUnderwater( false );
+		this._setRideHint();
+
+	}
+
+	_swimStep( h ) {
+
+		const { keys, vel } = this;
+		const seaLevel = this.sea.level();
+		if ( seaLevel === null ) {
+
+			this._leaveSwim();
+			return;
+
+		}
+
+		const speed = vel.length();
+		const turn = ( keys.has( 'KeyA' ) ? 1 : 0 ) - ( keys.has( 'KeyD' ) ? 1 : 0 );
+		this.yaw += turn * 2.2 / ( 1 + speed / 8 ) * h;
+		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+
+		if ( keys.has( 'KeyW' ) ) vel.addScaledVector( _fwd, 6 * h );
+		if ( keys.has( 'KeyS' ) && speed > 0.01 ) vel.multiplyScalar( Math.max( 0, 1 - 6 * h / speed ) );
+		if ( keys.has( 'Space' ) ) vel.y += 8 * h;
+		if ( keys.has( 'ShiftLeft' ) || keys.has( 'ShiftRight' ) ) vel.y -= 8 * h;
+
+		vel.y += 2.2 * h;                            // buoyancy
+		vel.multiplyScalar( Math.exp( - 1.1 * h ) ); // water drag
+
+		this.pos.addScaledVector( vel, h );
+		if ( this.playArea ) this.playArea.constrain( this.pos, vel, 10 );
+
+		// seabed matches the visual basin depth
+		const floor = seaLevel - 6.0;
+		if ( this.pos.y < floor ) {
+
+			this.pos.y = floor;
+			if ( vel.y < 0 ) vel.y = 0;
+
+		}
+
+		// surface: float and bob on the waves, or breach with enough speed
+		const surface = this.sea.surfaceAt( this.pos.x, this.pos.z ) - 0.15;
+		if ( this.pos.y >= surface ) {
+
+			if ( vel.y > 3.2 ) {
+
+				this._leaveSwim();
+				vel.y = Math.max( vel.y, 4.2 ); // leap clear of the water
+				this.audio.splash( 2.5 );
+				return;
+
+			}
+
+			this.pos.y = surface;
+			if ( vel.y > 0 ) vel.y = 0;
+
+		}
+
+		// shore rises above sea level → climb out and ride
+		const hit = this._groundHit( this.pos.x, this.pos.y, this.pos.z, 3, 12 );
+		if ( hit && hit.point.y > seaLevel + 0.15 && hit.point.y > this.pos.y - 0.5 &&
+			! this.sea.isWater( this.pos.x, this.pos.z ) ) {
+
+			this.pos.y = hit.point.y;
+			this.groundNormal.copy( hit.worldNormal || UP );
+			this._leaveSwim();
+			this.onGround = true;
+			this.audio.splash( 1 );
+			return;
+
+		}
+
+		this.lastGroundY = floor;
+		this.audio.setUnderwater( this.pos.y < seaLevel - 0.6 );
+
+		// paddle strokes while pushing forward
+		if ( keys.has( 'KeyW' ) ) {
+
+			this._strokeTimer -= h;
+			if ( this._strokeTimer <= 0 ) {
+
+				this.audio.stroke();
+				this._strokeTimer = 0.85;
+
+			}
+
+		}
 
 	}
 
@@ -689,8 +840,11 @@ export class SkateMode {
 		this.deck.rotation.z = this._lean;
 
 		// manual: pitch the deck nose-up, pivoting on the rear axle — the root
-		// rises so the back wheels stay planted while the front ones lift
-		const pitchTarget = this.manual ? MANUAL_PITCH : 0;
+		// rises so the back wheels stay planted while the front ones lift.
+		// swimming: the nose follows the dive/climb direction instead
+		const pitchTarget = this.swimming
+			? MathUtils.clamp( this.vel.y * 0.12, - 0.5, 0.5 )
+			: this.manual ? MANUAL_PITCH : 0;
 		this._pitch += ( pitchTarget - this._pitch ) * ( 1 - Math.exp( - 10 * dt ) );
 		this.deck.rotation.x = - this._pitch;
 		this.board.position.addScaledVector( this._visUp, Math.sin( this._pitch ) * REAR_AXLE_Z );
@@ -714,6 +868,7 @@ export class SkateMode {
 		this.rig.update( dt, {
 			grounded: this.onGround,
 			speed,
+			swimming: this.swimming,
 			grinding: !! this.grinding,
 			manual: this.manual,
 			pushing: this.onGround && this.keys.has( 'KeyW' ),
@@ -786,9 +941,11 @@ export class SkateMode {
 
 		const mph = Math.round( this.vel.length() * 2.237 );
 		this.hud.speed.textContent = mph;
-		this.hud.state.textContent = this.grinding ? 'GRIND'
-			: ! this.onGround ? 'AIR'
-				: this.manual ? 'MANUAL' : '';
+		this.hud.state.textContent = this.swimming
+			? ( this.sea && this.pos.y < this.sea.level() - 0.6 ? 'DIVE' : 'SWIM' )
+			: this.grinding ? 'GRIND'
+				: ! this.onGround ? 'AIR'
+					: this.manual ? 'MANUAL' : '';
 
 		this.hud.balanceWrap.classList.toggle( 'hidden', ! this.grinding );
 		if ( this.grinding ) {
