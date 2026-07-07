@@ -261,7 +261,7 @@ export class SkateMode {
 
 	// --- mode switching --------------------------------------------------------
 
-	enter( spawnPoint, viewDir ) {
+	enter( spawnPoint, viewDir, opts = {} ) {
 
 		ensureBVH( this.tilesGroup );
 
@@ -280,6 +280,7 @@ export class SkateMode {
 
 		this.lastGroundY = this.pos.y;
 		this.vel.set( 0, 0, 0 );
+		if ( opts.vel ) this.vel.copy( opts.vel ); // momentum carries across modes
 		this.yaw = Math.atan2( viewDir.x, viewDir.z );
 		this.onGround = true;
 		this.spawn.copy( this.pos );
@@ -302,10 +303,10 @@ export class SkateMode {
 		this.audio.start();
 		this.hud.root.classList.remove( 'hidden' );
 		this.hud.hint.textContent =
-			'W push · S brake · A/D carve · Shift manual · Space ollie · 1 ramp · 2 rail · U upscale · R respawn · Esc bail';
+			'W push · S brake · A/D carve · Shift manual · Space ollie · E step off · 1 ramp · 2 rail · U upscale · R respawn · Esc bail';
 		if ( document.activeElement ) document.activeElement.blur();
 
-		this._updateCamera( 1, true );
+		this._updateCamera( 1, opts.snapCamera !== false );
 
 	}
 

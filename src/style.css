@@ -225,11 +225,10 @@ canvas { display: block; }
 }
 
 /* ---- skate ---- */
-.drop-grid { display: flex; gap: 5px; }
 .drop-btn {
-  flex: 1;
-  padding: 8px 4px;
-  font-size: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
   font-weight: 600;
   border-radius: 7px;
   border: none;

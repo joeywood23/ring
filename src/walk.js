@@ -16,11 +16,11 @@ import { PHYSICS } from './skate.js';
 // physics — people stop when they stop. One class covers both gaits.
 
 const GAITS = {
-	walk: { maxSpeed: 2.2, accel: 10, turn: 3.0, jump: 3.4, back: 0.5, label: 'WALK' },
-	run: { maxSpeed: 7.5, accel: 14, turn: 2.4, jump: 4.8, back: 0.35, label: 'RUN' },
+	walk: { maxSpeed: 2.2, accel: 10, turn: 3.0, jump: 3.4, back: 0.5 },
+	run: { maxSpeed: 7.5, accel: 14, turn: 2.4, jump: 4.8, back: 0.35 },
 };
 
-const HINT = 'W move · S back · A/D turn · Space jump · 1 ramp · 2 rail · R respawn · Esc exit';
+const HINT = 'W move · Shift run · S back · A/D turn · Space jump · E board · 1 ramp · 2 rail · R respawn · Esc exit';
 
 const STEP_UP = 0.4;
 const SNAP_DOWN = 1.0;
@@ -52,6 +52,7 @@ export class PedestrianMode {
 
 		this.active = false;
 		this.gait = GAITS.walk;
+		this.running = false;
 		this.pos = new Vector3();
 		this.vel = new Vector3();
 		this.yaw = 0;
@@ -103,15 +104,13 @@ export class PedestrianMode {
 
 	}
 
-	enter( spawnPoint, viewDir, gaitName = 'walk' ) {
-
-		this.gaitName = GAITS[ gaitName ] ? gaitName : 'walk';
-		this.gait = GAITS[ this.gaitName ];
+	enter( spawnPoint, viewDir, opts = {} ) {
 
 		const hit = this._groundHit( spawnPoint.x, spawnPoint.y, spawnPoint.z, 500, 4000 );
 		this.pos.copy( hit ? hit.point : spawnPoint );
 		this.lastGroundY = this.pos.y;
 		this.vel.set( 0, 0, 0 );
+		if ( opts.vel ) this.vel.copy( opts.vel ); // momentum carries across modes
 		this.yaw = Math.atan2( viewDir.x, viewDir.z );
 		this.onGround = true;
 		this.spawn.copy( this.pos );
@@ -135,7 +134,7 @@ export class PedestrianMode {
 		this.hud.balanceWrap.classList.add( 'hidden' );
 		if ( document.activeElement ) document.activeElement.blur();
 
-		this._updateCamera( 1, true );
+		this._updateCamera( 1, opts.snapCamera !== false );
 
 	}
 
@@ -220,7 +219,13 @@ export class PedestrianMode {
 
 	_physicsStep( h ) {
 
-		const { keys, vel, gait } = this;
+		const { keys, vel } = this;
+
+		// gait follows the Shift key: hold to run, release to walk
+		const shift = keys.has( 'ShiftLeft' ) || keys.has( 'ShiftRight' );
+		const gait = shift ? GAITS.run : GAITS.walk;
+		this.gait = gait;
+		this.running = shift && keys.has( 'KeyW' );
 
 		const turn = ( keys.has( 'KeyA' ) ? 1 : 0 ) - ( keys.has( 'KeyD' ) ? 1 : 0 );
 		this.yaw += turn * gait.turn * ( this.onGround ? 1 : 0.5 ) * h;
@@ -333,7 +338,8 @@ export class PedestrianMode {
 		this.body.quaternion.slerp( _q, 1 - Math.exp( - 12 * dt ) );
 
 		const speed = Math.hypot( this.vel.x, this.vel.z );
-		const running = this.gait === GAITS.run;
+		// arms/legs go to the run cycle whenever the feet are actually moving fast
+		const running = this.running || speed > 3.2;
 		const footstrike = this.rig.update( dt, { grounded: this.onGround, speed, running } );
 		if ( footstrike && this.onGround ) this.audio.step( running );
 
@@ -367,9 +373,9 @@ export class PedestrianMode {
 
 	_updateHUD() {
 
-		const mph = Math.round( this.vel.length() * 2.237 );
-		this.hud.speed.textContent = mph;
-		this.hud.state.textContent = ! this.onGround ? 'AIR' : this.gait.label;
+		const speed = this.vel.length();
+		this.hud.speed.textContent = Math.round( speed * 2.237 );
+		this.hud.state.textContent = ! this.onGround ? 'AIR' : speed > 3.2 ? 'RUN' : 'WALK';
 
 	}
 

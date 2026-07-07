@@ -45,7 +45,6 @@ const state = {
 };
 
 let renderer, camera, scene, tiles, controls, minimap, skate, walker, targeter, detail, park;
-let dropMode = 'skate'; // which mode the next drop-in (or in-place switch) uses
 const playArea = new PlayArea();
 const clock = new Clock();
 
@@ -353,8 +352,6 @@ function flyToPoint( point ) {
 // Skate mode
 // ---------------------------------------------------------------------------
 
-const MODE_LABELS = { skate: '🛹 Skate', walk: '🚶 Walk', run: '🏃 Run' };
-
 // the active ground mode (skate or pedestrian), or null when flying free
 function groundMode() {
 
@@ -366,51 +363,28 @@ function groundMode() {
 
 function setDropButtonState( targeting ) {
 
-	for ( const m in MODE_LABELS ) {
-
-		const btn = document.getElementById( `drop-${ m }` );
-		const on = targeting && m === dropMode;
-		btn.classList.toggle( 'targeting', on );
-		btn.textContent = on ? '✕ Cancel' : MODE_LABELS[ m ];
-
-	}
-
+	const btn = document.getElementById( 'drop-skate' );
+	btn.classList.toggle( 'targeting', targeting );
+	btn.textContent = targeting ? '✕ Cancel — pick a spot' : '🛹 Drop In';
 	document.getElementById( 'target-hint' ).classList.toggle( 'hidden', ! targeting );
 
 }
 
-function onDropButton( mode ) {
+function toggleDropTargeting() {
 
-	if ( ! state.rootLoaded ) return;
-
-	if ( groundMode() ) {
-
-		switchMode( mode ); // already on the ground: swap in place
-		return;
-
-	}
+	if ( ! state.rootLoaded || groundMode() ) return;
 
 	if ( targeter.active ) {
 
-		if ( dropMode === mode ) {
+		targeter.cancel(); // resets the button via onCancel
 
-			targeter.cancel(); // resets the buttons via onCancel
+	} else {
 
-		} else {
-
-			dropMode = mode; // re-aim the pending drop at a different mode
-			setDropButtonState( true );
-
-		}
-
-		return;
+		ensureBVH( tiles.group ); // one-time raycast prep for the loaded tiles
+		targeter.begin();
+		setDropButtonState( true );
 
 	}
-
-	dropMode = mode;
-	ensureBVH( tiles.group ); // one-time raycast prep for the loaded tiles
-	targeter.begin();
-	setDropButtonState( true );
 
 }
 
@@ -423,26 +397,26 @@ function enterModeAt( point ) {
 
 	playArea.constrain( point, null, 30 );
 	camera.getWorldDirection( _dir ); // face the way the camera was looking
-	if ( dropMode === 'skate' ) skate.enter( point, _dir );
-	else walker.enter( point, _dir, dropMode );
+	skate.enter( point, _dir ); // always arrive on the board
 	detail.setActive( state.upscale );
 	updateUpscaleStatus();
 
 }
 
-// swap between skate / walk / run in place, keeping position and heading
-function switchMode( mode ) {
+// E: hop off the board / back on, in place — momentum and camera carry over
+function toggleBoard() {
 
 	const cur = groundMode();
-	const curName = cur === skate ? 'skate' : walker.gaitName;
-	if ( ! cur || mode === curName ) return;
+	if ( ! cur || ! cur.onGround || cur.grinding ) return;
 
 	const point = cur.pos.clone();
+	const vel = cur.vel.clone();
 	_dir.set( Math.sin( cur.yaw ), 0, Math.cos( cur.yaw ) );
 	cur.exit( true ); // silent: no camera flyout, controls stay disabled
 
-	if ( mode === 'skate' ) skate.enter( point, _dir );
-	else walker.enter( point, _dir, mode );
+	const next = cur === skate ? walker : skate;
+	next.enter( point, _dir, { vel, snapCamera: false } );
+	next.audio.step( true ); // the hop on / off
 
 }
 
@@ -685,16 +659,12 @@ function buildPhysicsControls() {
 
 function bindUI() {
 
-	for ( const m of [ 'skate', 'walk', 'run' ] ) {
+	document.getElementById( 'drop-skate' ).addEventListener( 'click', ( e ) => {
 
-		document.getElementById( `drop-${ m }` ).addEventListener( 'click', ( e ) => {
+		toggleDropTargeting();
+		e.target.blur();
 
-			onDropButton( m );
-			e.target.blur();
-
-		} );
-
-	}
+	} );
 
 	const upscaleBox = document.getElementById( 'upscale' );
 	upscaleBox.checked = state.upscale;
@@ -704,6 +674,7 @@ function bindUI() {
 		if ( ! groundMode() || ( e.target && e.target.tagName === 'INPUT' ) ) return;
 
 		if ( e.code === 'KeyU' ) setUpscale( ! state.upscale );
+		if ( e.code === 'KeyE' ) toggleBoard();
 		if ( e.code === 'Digit1' ) spawnProp( 'ramp' );
 		if ( e.code === 'Digit2' ) spawnProp( 'rail' );
 
