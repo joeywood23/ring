@@ -81,6 +81,9 @@ export class SkateAudio {
 		// skid: bright scrape while braking
 		this.skid = this._noiseLoop( this._filter( 'bandpass', 2200, 0.7 ), 1.4 );
 
+		// grind: resonant metallic scrape while on a rail
+		this.grind = this._noiseLoop( this._filter( 'bandpass', 2700, 5 ), 1.5 );
+
 		this.running = true;
 		this._pushTimer = 0;
 
@@ -91,7 +94,7 @@ export class SkateAudio {
 		if ( ! this.running ) return;
 
 		const t = this.ctx.currentTime;
-		for ( const loop of [ this.roll, this.carve, this.skid ] ) {
+		for ( const loop of [ this.roll, this.carve, this.skid, this.grind ] ) {
 
 			// quick fade before stopping so the loop doesn't end on a click
 			loop.gain.gain.setTargetAtTime( 0, t, 0.04 );
@@ -121,6 +124,9 @@ export class SkateAudio {
 
 		const skidLevel = s.grounded && s.braking ? Math.min( s.speed / 12, 1 ) * 0.5 : 0;
 		this.skid.gain.gain.setTargetAtTime( skidLevel, t, 0.03 );
+
+		const grindLevel = s.grinding ? Math.min( s.speed / 10, 1 ) * 0.45 : 0;
+		this.grind.gain.gain.setTargetAtTime( grindLevel, t, 0.03 );
 
 		if ( s.grounded && s.pushing ) {
 
@@ -160,6 +166,40 @@ export class SkateAudio {
 		gain.connect( this.master );
 		src.start( t );
 		src.stop( t + 0.32 );
+
+	}
+
+	// metallic clank when the trucks lock onto a rail
+	grindStart() {
+
+		if ( ! this.running ) return;
+
+		const t = this.ctx.currentTime;
+		for ( const freq of [ 2100, 3150 ] ) {
+
+			const osc = this.ctx.createOscillator();
+			osc.frequency.value = freq;
+			const og = this.ctx.createGain();
+			og.gain.setValueAtTime( 0.16, t );
+			og.gain.exponentialRampToValueAtTime( 0.001, t + 0.09 );
+			osc.connect( og );
+			og.connect( this.master );
+			osc.start( t );
+			osc.stop( t + 0.1 );
+
+		}
+
+		const src = this.ctx.createBufferSource();
+		src.buffer = this.noise;
+		const filter = this._filter( 'highpass', 2000, 0.7 );
+		const gain = this.ctx.createGain();
+		gain.gain.setValueAtTime( 0.3, t );
+		gain.gain.exponentialRampToValueAtTime( 0.001, t + 0.05 );
+		src.connect( filter );
+		filter.connect( gain );
+		gain.connect( this.master );
+		src.start( t );
+		src.stop( t + 0.07 );
 
 	}
 

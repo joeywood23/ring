@@ -55,6 +55,16 @@
     </div>
 
     <div class="section">
+      <div class="section-title">Park</div>
+      <div class="btn-grid">
+        <button id="spawn-ramp">Ramp</button>
+        <button id="spawn-rail">Rail</button>
+        <button id="clear-park">Clear</button>
+      </div>
+      <div class="section-note">While skating: <kbd>1</kbd> ramp · <kbd>2</kbd> rail, spawned ahead of you</div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Skate physics</div>
       <div id="physics-controls"></div>
       <button id="physics-reset">Reset defaults</button>
@@ -105,7 +115,11 @@
       <span class="hud-unit">mph</span>
       <span id="hud-state"></span>
     </div>
-    <div class="hud-hint">W push · S brake · A/D carve · Shift manual · Space ollie · U upscale · R respawn · Esc bail</div>
+    <div id="balance-wrap" class="hidden">
+      <div id="balance-track"><div id="balance-dot"></div></div>
+      <div class="balance-label">balance — hold it with A/D</div>
+    </div>
+    <div class="hud-hint">W push · S brake · A/D carve · Shift manual · Space ollie · 1 ramp · 2 rail · U upscale · R respawn · Esc bail</div>
   </div>
 
   <div id="hint" class="hidden">left-drag move &nbsp;·&nbsp; right-drag look &nbsp;·&nbsp; scroll zoom &nbsp;·&nbsp; click map to fly</div>

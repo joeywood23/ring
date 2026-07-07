@@ -131,7 +131,11 @@ export class SkaterRig {
 		set( T.armRFore, - 0.30, 0, 0 );
 
 		// --- mode overrides ---
-		if ( ! state.grounded ) {
+		if ( state.grinding ) {
+
+			this._poseGrind( T, hips );
+
+		} else if ( ! state.grounded ) {
 
 			this._poseAir( T, hips );
 
@@ -206,6 +210,27 @@ export class SkaterRig {
 		set( T.armLFore, - 0.5, 0, 0 );
 		set( T.armR, - 0.4, 0, 0.9 );
 		set( T.armRFore, - 0.5, 0, 0 );
+
+	}
+
+	// grinding: low crouch, arms straight out like a tightrope walker — the
+	// balance wobble arrives through the lean overlay on top of this
+	_poseGrind( T, hips ) {
+
+		hips.y = 0.60;
+		set( T.hips, 0.18, - 0.85, 0 );
+		set( T.torso, 0.22, 0.35, 0 );
+		set( T.head, - 0.10, 0.55, 0 );
+		set( T.legL, - 0.70, 0.75, 0 );
+		set( T.legLShin, 1.0, 0, 0 );
+		set( T.legLFoot, - 0.30, - 0.25, 0 );
+		set( T.legR, - 0.75, 0.35, 0 );
+		set( T.legRShin, 1.05, 0, 0 );
+		set( T.legRFoot, - 0.30, - 0.85, 0 );
+		set( T.armL, 0.25, 0, - 1.35 );      // arms straight out to the sides
+		set( T.armLFore, - 0.1, 0, 0 );
+		set( T.armR, 0.25, 0, 1.35 );
+		set( T.armRFore, - 0.1, 0, 0 );
 
 	}
 

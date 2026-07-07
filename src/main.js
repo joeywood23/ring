@@ -23,6 +23,7 @@ import { distortionUniforms, patchMaterial, EFFECTS, COLOR_MODES } from './effec
 import { LOCATIONS, cameraGeoForLocation } from './locations.js';
 import { Minimap } from './minimap.js';
 import { SkateMode, ensureBVH, PHYSICS, PHYSICS_CONTROLS } from './skate.js';
+import { SkatePark } from './props.js';
 import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
@@ -41,7 +42,7 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, targeter, detail;
+let renderer, camera, scene, tiles, controls, minimap, skate, targeter, detail, park;
 const playArea = new PlayArea();
 const clock = new Clock();
 
@@ -193,15 +194,20 @@ function init( apiKey ) {
 		onPick: ( point ) => flyToPoint( point ),
 	} );
 
+	park = new SkatePark( { scene } );
+
 	skate = new SkateMode( {
 		scene,
 		camera,
 		playArea,
+		park,
 		tilesGroup: tiles.group,
 		hud: {
 			root: document.getElementById( 'hud' ),
 			speed: document.getElementById( 'hud-speed' ),
 			state: document.getElementById( 'hud-state' ),
+			balanceWrap: document.getElementById( 'balance-wrap' ),
+			balanceDot: document.getElementById( 'balance-dot' ),
 		},
 		onExit: onSkateExit,
 	} );
@@ -385,6 +391,22 @@ function updateUpscaleStatus() {
 	const el = document.getElementById( 'upscale-status' );
 	if ( ! skate.active ) el.textContent = state.upscale ? 'active while skating' : '';
 	else el.textContent = state.upscale ? detail.status : 'off';
+
+}
+
+const _spawnPt = new Vector3();
+
+// Drop a prop on the ground ahead of the skater, aligned with their heading.
+function spawnProp( type ) {
+
+	if ( ! skate.active ) return;
+
+	const dist = type === 'ramp' ? 14 : 8;
+	const point = skate.groundPointAhead( dist, _spawnPt );
+	if ( ! point ) return;
+
+	if ( type === 'ramp' ) park.spawnRamp( point, skate.yaw );
+	else park.spawnRail( point, skate.yaw );
 
 }
 
@@ -598,13 +620,28 @@ function bindUI() {
 	upscaleBox.addEventListener( 'change', ( e ) => setUpscale( e.target.checked ) );
 	window.addEventListener( 'keydown', ( e ) => {
 
-		if ( e.code === 'KeyU' && skate.active && ( ! e.target || e.target.tagName !== 'INPUT' ) ) {
+		if ( ! skate.active || ( e.target && e.target.tagName === 'INPUT' ) ) return;
 
-			setUpscale( ! state.upscale );
-
-		}
+		if ( e.code === 'KeyU' ) setUpscale( ! state.upscale );
+		if ( e.code === 'Digit1' ) spawnProp( 'ramp' );
+		if ( e.code === 'Digit2' ) spawnProp( 'rail' );
 
 	} );
+
+	for ( const [ id, fn ] of [
+		[ 'spawn-ramp', () => spawnProp( 'ramp' ) ],
+		[ 'spawn-rail', () => spawnProp( 'rail' ) ],
+		[ 'clear-park', () => park.clear() ],
+	] ) {
+
+		document.getElementById( id ).addEventListener( 'click', ( e ) => {
+
+			fn();
+			e.target.blur();
+
+		} );
+
+	}
 	updateUpscaleStatus();
 	setInterval( updateUpscaleStatus, 1000 );
 

@@ -52,6 +52,7 @@ export const PHYSICS = {
 	manualTurn: 1.8,    // steering multiplier while manualing on the back wheels
 	jump: 5.5,          // ollie pop velocity
 	maxSpeed: 50,
+	grindWobble: 2.5,   // how aggressively grind balance runs away
 };
 
 // [ key, label, min, max, step ] — spec the panel builds its sliders from
@@ -68,6 +69,7 @@ export const PHYSICS_CONTROLS = [
 	[ 'manualTurn', 'Manual turn', 1, 4, 0.05 ],
 	[ 'jump', 'Ollie', 0, 15, 0.1 ],
 	[ 'maxSpeed', 'Max speed', 5, 100, 1 ],
+	[ 'grindWobble', 'Grind wobble', 0, 8, 0.1 ],
 ];
 const STEP_UP = 0.5;       // curbs and small ledges roll over
 const SNAP_DOWN = 1.2;     // stay glued to ground over bumps below this drop
@@ -99,6 +101,8 @@ const _n = new Vector3();
 const _desired = new Vector3();
 const _look = new Vector3();
 const _right = new Vector3();
+const _railPt = new Vector3();
+const _side = new Vector3();
 const _m = new Matrix4();
 const _q = new Quaternion();
 const UP = new Vector3( 0, 1, 0 );
@@ -106,14 +110,18 @@ const DOWN = new Vector3( 0, - 1, 0 );
 
 export class SkateMode {
 
-	constructor( { scene, camera, tilesGroup, playArea, hud, onExit } ) {
+	constructor( { scene, camera, tilesGroup, playArea, park, hud, onExit } ) {
 
 		this.scene = scene;
 		this.camera = camera;
 		this.tilesGroup = tilesGroup;
 		this.playArea = playArea;
-		this.hud = hud; // { root, speed, state }
+		this.park = park;
+		this.hud = hud; // { root, speed, state, balanceWrap, balanceDot }
 		this.onExit = onExit;
+
+		// ramps count as terrain; rails are handled by the grind state instead
+		this._rideables = park ? [ tilesGroup, park.rideable ] : [ tilesGroup ];
 
 		this.active = false;
 		this.pos = new Vector3();
@@ -121,6 +129,9 @@ export class SkateMode {
 		this.yaw = 0;
 		this.onGround = true;
 		this.manual = false;
+		this.grinding = null; // { rail, s, sign, spd }
+		this.balance = 0;
+		this.balanceVel = 0;
 		this.groundNormal = new Vector3( 0, 1, 0 );
 		this.lastGroundY = 0;
 		this.spawn = new Vector3();
@@ -235,7 +246,7 @@ export class SkateMode {
 		this._raycaster.ray.direction.copy( DOWN );
 		this._raycaster.near = 0;
 		this._raycaster.far = far + above;
-		const hit = this._raycaster.intersectObject( this.tilesGroup, true )[ 0 ];
+		const hit = this._raycaster.intersectObjects( this._rideables, true )[ 0 ];
 		if ( hit && hit.face ) {
 
 			hit.worldNormal = _n.copy( hit.face.normal )
@@ -301,6 +312,7 @@ export class SkateMode {
 		if ( ! this.active ) return;
 
 		this.active = false;
+		this.grinding = null;
 		this.audio.stop();
 		this.keys.clear();
 		this.scene.remove( this.board, this.shadow );
@@ -325,7 +337,19 @@ export class SkateMode {
 		this.vel.set( 0, 0, 0 );
 		this.yaw = this.spawnYaw;
 		this.onGround = true;
+		this.grinding = null;
 		this.lastGroundY = this.pos.y;
+
+	}
+
+	// ground point `dist` metres ahead of the skater — used to place props
+	groundPointAhead( dist, out ) {
+
+		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+		const x = this.pos.x + _fwd.x * dist;
+		const z = this.pos.z + _fwd.z * dist;
+		const hit = this._groundHit( x, this.pos.y, z, 15, 100 );
+		return hit ? out.copy( hit.point ) : null;
 
 	}
 
@@ -365,6 +389,13 @@ export class SkateMode {
 	}
 
 	_physicsStep( h ) {
+
+		if ( this.grinding ) {
+
+			this._grindStep( h );
+			return;
+
+		}
 
 		const { keys, vel } = this;
 		const speed = vel.length();
@@ -414,7 +445,7 @@ export class SkateMode {
 			this._raycaster.ray.direction.copy( _horiz ).divideScalar( horizDist );
 			this._raycaster.near = 0;
 			this._raycaster.far = horizDist + 0.35;
-			const wall = this._raycaster.intersectObject( this.tilesGroup, true )[ 0 ];
+			const wall = this._raycaster.intersectObjects( this._rideables, true )[ 0 ];
 			if ( wall && wall.face ) {
 
 				_n.copy( wall.face.normal ).transformDirection( wall.object.matrixWorld );
@@ -475,8 +506,106 @@ export class SkateMode {
 
 		}
 
+		// airborne over a rail? lock onto it
+		if ( ! this.onGround && this.park ) this._tryGrind();
+
 		// fell off the mesh entirely
 		if ( this.pos.y < this.lastGroundY - 400 ) this.respawn();
+
+	}
+
+	// --- grinding ----------------------------------------------------------------
+
+	_tryGrind() {
+
+		if ( this.vel.y > 2.5 ) return; // still rising from the ollie
+
+		for ( const rail of this.park.rails ) {
+
+			const s = MathUtils.clamp(
+				_railPt.subVectors( this.pos, rail.p0 ).dot( rail.dir ), 0, rail.len );
+			_railPt.copy( rail.p0 ).addScaledVector( rail.dir, s );
+
+			const horiz = Math.hypot( this.pos.x - _railPt.x, this.pos.z - _railPt.z );
+			const dy = this.pos.y - _railPt.y;
+			if ( horiz > 0.45 || dy < - 0.15 || dy > 0.6 ) continue;
+
+			const along = this.vel.dot( rail.dir );
+			if ( Math.abs( along ) < 1.2 ) continue; // crossing, not riding
+
+			const sign = Math.sign( along );
+			this.grinding = { rail, s, sign, spd: Math.abs( along ) };
+			this.balance = ( Math.random() - 0.5 ) * 0.4; // land slightly off-center
+			this.balanceVel = 0;
+			this.yaw = Math.atan2( rail.dir.x * sign, rail.dir.z * sign );
+			this.audio.grindStart();
+			return;
+
+		}
+
+	}
+
+	_grindStep( h ) {
+
+		const g = this.grinding;
+		const { keys, vel } = this;
+
+		// balance is an inverted pendulum: it runs away on its own and gets
+		// kicked by noise — A/D push it back
+		const turn = ( keys.has( 'KeyA' ) ? 1 : 0 ) - ( keys.has( 'KeyD' ) ? 1 : 0 );
+		const wobble = PHYSICS.grindWobble;
+		this.balanceVel += (
+			this.balance * wobble * 1.6 +
+			( Math.random() - 0.5 ) * wobble * 1.4 +
+			turn * 5
+		) * h;
+		this.balanceVel *= Math.exp( - 1.2 * h );
+		this.balance += this.balanceVel * h;
+
+		// grind friction + gravity along a (possibly sloped) rail
+		g.spd -= ( 0.4 + PHYSICS.gravity * g.rail.dir.y * g.sign ) * h;
+		g.s += g.sign * g.spd * h;
+
+		_railPt.copy( g.rail.p0 ).addScaledVector( g.rail.dir, MathUtils.clamp( g.s, 0, g.rail.len ) );
+		this.pos.copy( _railPt );
+		this.pos.y += 0.07; // wheels perched on the bar
+		this.lastGroundY = this.pos.y - 0.55;
+		vel.copy( g.rail.dir ).multiplyScalar( g.sign * g.spd );
+
+		// ollie off
+		if ( keys.has( 'Space' ) && ! this._jumpHeld ) {
+
+			this._jumpHeld = true;
+			this._endGrind();
+			vel.y += PHYSICS.jump;
+			this.audio.jump();
+			return;
+
+		}
+		if ( ! keys.has( 'Space' ) ) this._jumpHeld = false;
+
+		// lost it: bucked off sideways, bleeding speed
+		if ( Math.abs( this.balance ) > 1 ) {
+
+			_side.crossVectors( vel, UP ).normalize();
+			this._endGrind();
+			vel.multiplyScalar( 0.55 );
+			vel.addScaledVector( _side, - Math.sign( this.balance ) * 2.5 );
+			return;
+
+		}
+
+		// rolled off either end, or stalled out
+		if ( g.s < 0 || g.s > g.rail.len || g.spd < 0.8 ) this._endGrind();
+
+	}
+
+	_endGrind() {
+
+		this.grinding = null;
+		this.balance = 0;
+		this.balanceVel = 0;
+		this.onGround = false;
 
 	}
 
@@ -539,12 +668,15 @@ export class SkateMode {
 		this.board.quaternion.slerp( _q, 1 - Math.exp( - 14 * dt ) );
 		this.board.position.copy( this.pos );
 
-		// deck roll from steering input, scaled up with speed
+		// deck roll from steering input, scaled up with speed; while grinding
+		// the roll is the balance wobble itself
 		const turn = ( this.keys.has( 'KeyA' ) ? 1 : 0 ) - ( this.keys.has( 'KeyD' ) ? 1 : 0 );
 		const speed = this.vel.length();
-		const leanTarget = this.onGround
-			? turn * Math.min( speed / 9, 1 ) * MAX_LEAN
-			: turn * MAX_LEAN * 0.4;
+		const leanTarget = this.grinding
+			? this.balance * MAX_LEAN * 1.3
+			: this.onGround
+				? turn * Math.min( speed / 9, 1 ) * MAX_LEAN
+				: turn * MAX_LEAN * 0.4;
 		this._lean += ( leanTarget - this._lean ) * ( 1 - Math.exp( - 7 * dt ) );
 		this.deck.rotation.z = this._lean;
 
@@ -574,6 +706,7 @@ export class SkateMode {
 		this.rig.update( dt, {
 			grounded: this.onGround,
 			speed,
+			grinding: !! this.grinding,
 			manual: this.manual,
 			pushing: this.onGround && this.keys.has( 'KeyW' ),
 			braking: this.onGround && this.keys.has( 'KeyS' ) && speed > 0.3,
@@ -601,6 +734,7 @@ export class SkateMode {
 
 		this.audio.update( dt, {
 			grounded: this.onGround,
+			grinding: !! this.grinding,
 			speed,
 			slip,
 			pushing: this.onGround && this.keys.has( 'KeyW' ),
@@ -644,7 +778,17 @@ export class SkateMode {
 
 		const mph = Math.round( this.vel.length() * 2.237 );
 		this.hud.speed.textContent = mph;
-		this.hud.state.textContent = ! this.onGround ? 'AIR' : this.manual ? 'MANUAL' : '';
+		this.hud.state.textContent = this.grinding ? 'GRIND'
+			: ! this.onGround ? 'AIR'
+				: this.manual ? 'MANUAL' : '';
+
+		this.hud.balanceWrap.classList.toggle( 'hidden', ! this.grinding );
+		if ( this.grinding ) {
+
+			this.hud.balanceDot.style.left = `${ 50 - this.balance * 45 }%`;
+			this.hud.balanceDot.classList.toggle( 'danger', Math.abs( this.balance ) > 0.65 );
+
+		}
 
 	}
 
