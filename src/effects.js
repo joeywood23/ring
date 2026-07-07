@@ -1,4 +1,4 @@
-import { Vector3 } from 'three';
+import { Vector2, Vector3 } from 'three';
 
 // Shared uniform objects — every patched tile material references these same
 // instances, so updating them once per frame drives all shaders.
@@ -12,6 +12,13 @@ export const distortionUniforms = {
 	// upscale zone: photogrammetry is muted inside so overlay models pop
 	uZoneCenter: { value: new Vector3() },
 	uZoneRadius: { value: 0 },
+	// segmentation coverage texture spanning the play area (see segment.js)
+	uSegTex: { value: null },
+	uSegStrength: { value: 0 },
+	uSegCenter: { value: new Vector2() },
+	uSegEast: { value: new Vector2( 1, 0 ) },
+	uSegNorth: { value: new Vector2( 0, 1 ) },
+	uSegHalf: { value: new Vector2( 1, 1 ) },
 };
 
 export const EFFECTS = [
@@ -139,7 +146,25 @@ uniform float uTime;
 uniform int uColorMode;
 uniform vec3 uZoneCenter;
 uniform float uZoneRadius;
+uniform sampler2D uSegTex;
+uniform float uSegStrength;
+uniform vec2 uSegCenter;
+uniform vec2 uSegEast;
+uniform vec2 uSegNorth;
+uniform vec2 uSegHalf;
 varying vec3 vRingWorld;
+
+// tint by the segmentation coverage texture (world XZ → play-area UV)
+vec3 ringSegment( vec3 col ) {
+
+	if ( uSegStrength <= 0.0 ) return col;
+	vec2 rel = vRingWorld.xz - uSegCenter;
+	vec2 uv = vec2( dot( rel, uSegEast ) / uSegHalf.x, dot( rel, uSegNorth ) / uSegHalf.y ) * 0.5 + 0.5;
+	if ( uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ) return col;
+	vec4 seg = texture2D( uSegTex, uv );
+	return mix( col, seg.rgb, seg.a * uSegStrength );
+
+}
 
 // mute the raw photogrammetry inside the upscale zone (blueprint base coat)
 vec3 ringZone( vec3 col ) {
@@ -205,13 +230,13 @@ export function patchMaterial( material ) {
 		shader.fragmentShader = FRAGMENT_DECLARATIONS + shader.fragmentShader
 			.replace(
 				'#include <opaque_fragment>',
-				'#include <opaque_fragment>\n\tgl_FragColor.rgb = ringZone( ringColor( gl_FragColor.rgb ) );'
+				'#include <opaque_fragment>\n\tgl_FragColor.rgb = ringZone( ringSegment( ringColor( gl_FragColor.rgb ) ) );'
 			);
 
 	};
 
 	// Constant suffix lets three.js share one compiled program across all tiles.
-	material.customProgramCacheKey = () => 'ring-distort-2';
+	material.customProgramCacheKey = () => 'ring-distort-3';
 	material.needsUpdate = true;
 
 }

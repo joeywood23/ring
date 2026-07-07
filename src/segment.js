@@ -1,470 +1,377 @@
-import {
-	Vector3,
-	Raycaster,
-	BufferGeometry,
-	BufferAttribute,
-	Mesh,
-	MeshBasicMaterial,
-} from 'three';
+import { CanvasTexture, LinearFilter, ClampToEdgeWrapping } from 'three';
+import { PbfReader } from 'pbf';
+import { VectorTile } from '@mapbox/vector-tile';
+import { PLAY_BOUNDS } from './bounds.js';
+import { distortionUniforms } from './effects.js';
 
-// Semantic segmentation of the photogrammetry. The mesh itself has no labels,
-// so polygons come from OpenStreetMap (Overpass) and are rasterized into a
-// colored ground grid: building / road / grass / water. SF Bay itself has no
-// simple OSM polygon, so sea level is calibrated by sampling the mesh at the
-// local origin (mid-bay) and low-lying ground is classified as water.
-// classify() is also exposed for gameplay — ask it what's underfoot.
+// Semantic segmentation of the whole play area, computed once up front.
+// OpenFreeMap vector tiles (OSM data) covering the play bounds are fetched in
+// one burst and rasterized as continuous polygons — buildings, roads at their
+// real widths, grass, water (the Bay included) — into a single coverage
+// canvas. The tile shader samples it by world position (see ringSegment in
+// effects.js), so the photogrammetry itself is tinted; no grids, no raycasts,
+// no refetching as you move. classify() reads the same canvas for gameplay.
 
-const OVERPASS_URLS = [
-	'https://overpass-api.de/api/interpreter',
-	'https://overpass.kumi.systems/api/interpreter',
-];
-const ZONE_RADIUS = 500;         // metres of labels around the focus point
-const REFRESH_DIST = 220;
-const MIN_FETCH_INTERVAL = 8000; // ms between Overpass requests
-const JOB_BUDGET_MS = 5;         // per-frame build budget
-const CELL = 16;                 // grid cell size, metres
-const LIFT = 0.6;                // drape height above the ground
-const SEA_MARGIN = 1.0;          // ground this close to sea level reads as water
+const TILEJSON_URL = 'https://tiles.openfreemap.org/planet';
+const ZOOM = 14;
+const CANVAS_W = 4096;
+const CONCURRENCY = 12;
+const TINT = 0.55; // how strongly classes tint the photogrammetry
 
 export const SEGMENT_COLORS = {
-	building: 0xff6f61,
-	road: 0x8b7cf6,
-	grass: 0x4ecb5f,
-	water: 0x3aa5ff,
+	building: '#ff6f61',
+	road: '#8b7cf6',
+	grass: '#4ecb5f',
+	water: '#3aa5ff',
 };
 
+const CLASS_RGB = {
+	building: [ 255, 111, 97 ],
+	road: [ 139, 124, 246 ],
+	grass: [ 78, 203, 95 ],
+	water: [ 58, 165, 255 ],
+};
+
+// road paint width in metres by OpenMapTiles transportation class
 const ROAD_WIDTHS = {
 	motorway: 18, trunk: 16, primary: 13, secondary: 11, tertiary: 10,
-	residential: 8, unclassified: 8, living_street: 7, service: 5,
-	pedestrian: 5, footway: 3, path: 3, cycleway: 3, steps: 3,
+	minor: 8, service: 5, busway: 8, raceway: 8, track: 4, path: 3,
 };
 
-const GRASS_LEISURE = new Set( [ 'park', 'garden', 'pitch', 'golf_course', 'playground', 'dog_park' ] );
-const GRASS_LANDUSE = new Set( [ 'grass', 'meadow', 'recreation_ground', 'village_green', 'forest', 'cemetery' ] );
-const GRASS_NATURAL = new Set( [ 'grassland', 'scrub', 'wood', 'heath' ] );
-const WATER_LANDUSE = new Set( [ 'basin', 'reservoir', 'salt_pond' ] );
-
-const _v = new Vector3();
+const GRASS_LANDUSE = new Set( [
+	'cemetery', 'pitch', 'stadium', 'playground', 'grass', 'garden',
+	'allotments', 'village_green', 'recreation_ground',
+] );
+const GRASS_LANDCOVER = new Set( [ 'grass', 'wood', 'scrub', 'meadow' ] );
 
 export class Segmentation {
 
-	constructor( { scene, tilesGroup, latLonToLocal, localToLatLon } ) {
+	constructor( { playArea } ) {
 
-		this.scene = scene;
-		this.tilesGroup = tilesGroup;
-		this.latLonToLocal = latLonToLocal;
-		this.localToLatLon = localToLatLon;
-
+		this.playArea = playArea;
 		this.enabled = false;
+		this.ready = false;
 		this.status = 'off';
+		this._building = false;
 
-		this._polys = { building: [], water: [], grass: [] };
-		this._roads = [];
-		this._seaY = null;
-		this._haveData = false;
+		// canvas aspect matches the play area's metric aspect
+		const widthM = 111320 * Math.cos( ( PLAY_BOUNDS.minLat + PLAY_BOUNDS.maxLat ) / 2 * Math.PI / 180 )
+			* ( PLAY_BOUNDS.maxLon - PLAY_BOUNDS.minLon );
+		const heightM = 111320 * ( PLAY_BOUNDS.maxLat - PLAY_BOUNDS.minLat );
+		this._mPerPx = widthM / CANVAS_W;
 
-		this.mesh = null;
-		this._center = new Vector3();
-		this._haveZone = false;
-		this._jobs = [];
-		this._fetching = false;
-		this._lastFetch = - Infinity;
-		this._abort = null;
+		this.canvas = document.createElement( 'canvas' );
+		this.canvas.width = CANVAS_W;
+		this.canvas.height = Math.round( CANVAS_W * heightM / widthM );
+		this.ctx = this.canvas.getContext( '2d', { willReadFrequently: true } );
+		this._pixels = null;
 
-		this._raycaster = new Raycaster();
-		this._raycaster.firstHitOnly = true;
+		this.texture = new CanvasTexture( this.canvas );
+		this.texture.minFilter = LinearFilter;
+		this.texture.magFilter = LinearFilter;
+		this.texture.generateMipmaps = false;
+		this.texture.wrapS = ClampToEdgeWrapping;
+		this.texture.wrapT = ClampToEdgeWrapping;
+		distortionUniforms.uSegTex.value = this.texture;
 
 	}
 
 	setActive( value ) {
 
-		if ( value === this.enabled ) return;
 		this.enabled = value;
 
 		if ( value ) {
 
-			this.status = 'waiting for map data…';
-			this._lastFetch = - Infinity;
+			this._syncFrame();
+			distortionUniforms.uSegStrength.value = TINT;
+			if ( ! this.ready && ! this._building ) this._build();
 
 		} else {
 
-			if ( this._abort ) this._abort.abort();
-			this._jobs.length = 0;
-			this._disposeMesh();
-			this._haveZone = false;
-			this._fetching = false;
-			this.status = 'off';
+			distortionUniforms.uSegStrength.value = 0;
 
 		}
 
 	}
 
-	update( focus ) {
+	// push the play-area frame (world XZ → coverage UV) into the shader
+	_syncFrame() {
 
-		if ( ! this.enabled ) return;
-
-		const now = performance.now();
-		const stale = ! this._haveZone || focus.distanceTo( this._center ) > REFRESH_DIST;
-		if ( stale && ! this._fetching && now - this._lastFetch > MIN_FETCH_INTERVAL ) {
-
-			this._refresh( focus.clone() );
-
-		}
-
-		const start = performance.now();
-		while ( this._jobs.length && performance.now() - start < JOB_BUDGET_MS ) {
-
-			this._jobs.shift()();
-
-		}
+		const pa = this.playArea;
+		if ( ! pa.ready ) return;
+		distortionUniforms.uSegCenter.value.set( pa.center.x, pa.center.z );
+		distortionUniforms.uSegEast.value.set( pa.eastDir.x, pa.eastDir.z );
+		distortionUniforms.uSegNorth.value.set( pa.northDir.x, pa.northDir.z );
+		distortionUniforms.uSegHalf.value.set( pa.halfWidth, pa.halfHeight );
 
 	}
 
-	// --- classification ----------------------------------------------------------
+	// --- classification (pixel lookup on the same coverage the shader shows) ---
 
-	// x/z in local space; groundY (optional) enables the sea-level water rule
-	classify( x, z, groundY = null ) {
+	classify( x, z ) {
 
-		if ( ! this._haveData ) return 'other';
+		if ( ! this._pixels || ! this.playArea.ready ) return 'other';
 
-		for ( const p of this._polys.building ) {
+		const pa = this.playArea;
+		const rx = x - pa.center.x;
+		const rz = z - pa.center.z;
+		const e = ( rx * pa.eastDir.x + rz * pa.eastDir.z ) / pa.halfWidth;
+		const n = ( rx * pa.northDir.x + rz * pa.northDir.z ) / pa.halfHeight;
+		if ( e < - 1 || e > 1 || n < - 1 || n > 1 ) return 'other';
 
-			if ( inBBox( p, x, z ) && pointInPoly( x, z, p.xs, p.zs ) ) return 'building';
+		const px = Math.min( this.canvas.width - 1, Math.max( 0, Math.round( ( e * 0.5 + 0.5 ) * this.canvas.width ) ) );
+		const py = Math.min( this.canvas.height - 1, Math.max( 0, Math.round( ( 1 - ( n * 0.5 + 0.5 ) ) * this.canvas.height ) ) );
+		const i = ( py * this.canvas.width + px ) * 4;
+		const d = this._pixels.data;
+		if ( d[ i + 3 ] < 100 ) return 'other';
+
+		let best = 'other';
+		let bestDist = Infinity;
+		for ( const cls in CLASS_RGB ) {
+
+			const c = CLASS_RGB[ cls ];
+			const dist = ( d[ i ] - c[ 0 ] ) ** 2 + ( d[ i + 1 ] - c[ 1 ] ) ** 2 + ( d[ i + 2 ] - c[ 2 ] ) ** 2;
+			if ( dist < bestDist ) {
+
+				bestDist = dist;
+				best = cls;
+
+			}
 
 		}
 
-		for ( const r of this._roads ) {
-
-			if ( ! inBBox( r, x, z ) ) continue;
-			if ( nearPolyline( x, z, r.pts, r.half ) ) return 'road';
-
-		}
-
-		for ( const p of this._polys.water ) {
-
-			if ( inBBox( p, x, z ) && pointInPoly( x, z, p.xs, p.zs ) ) return 'water';
-
-		}
-
-		for ( const p of this._polys.grass ) {
-
-			if ( inBBox( p, x, z ) && pointInPoly( x, z, p.xs, p.zs ) ) return 'grass';
-
-		}
-
-		if ( groundY !== null && this._seaY !== null && groundY < this._seaY + SEA_MARGIN ) return 'water';
-
-		return 'other';
+		return best;
 
 	}
 
-	// --- data fetch ----------------------------------------------------------------
+	// --- one-shot build ---------------------------------------------------------
 
-	async _refresh( center ) {
+	async _build() {
 
-		this._fetching = true;
-		this._lastFetch = performance.now();
-		this.status = 'fetching map data…';
-
-		const { lat, lon } = this.localToLatLon( center );
-		const dLat = ZONE_RADIUS / 111320;
-		const dLon = ZONE_RADIUS / ( 111320 * Math.cos( lat * Math.PI / 180 ) );
-		const bbox = `${ lat - dLat },${ lon - dLon },${ lat + dLat },${ lon + dLon }`;
-
-		const query = `[out:json][timeout:25];(
-			way["building"](${ bbox });
-			way["highway"](${ bbox });
-			way["leisure"~"^(park|garden|pitch|golf_course|playground|dog_park)$"](${ bbox });
-			way["landuse"~"^(grass|meadow|recreation_ground|village_green|forest|cemetery|basin|reservoir|salt_pond)$"](${ bbox });
-			way["natural"~"^(grassland|scrub|wood|heath|water)$"](${ bbox });
-			way["waterway"="riverbank"](${ bbox });
-		);out geom qt;`;
-
-		this._abort = new AbortController();
+		this._building = true;
+		this.status = 'fetching tile index…';
 
 		try {
 
-			for ( const url of OVERPASS_URLS ) {
+			const meta = await ( await fetch( TILEJSON_URL ) ).json();
+			const template = meta.tiles[ 0 ];
 
-				try {
+			const x0 = lonToTile( PLAY_BOUNDS.minLon, ZOOM );
+			const x1 = lonToTile( PLAY_BOUNDS.maxLon, ZOOM );
+			const y0 = latToTile( PLAY_BOUNDS.maxLat, ZOOM ); // north = smaller y
+			const y1 = latToTile( PLAY_BOUNDS.minLat, ZOOM );
 
-					const res = await fetch( url, {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-						body: 'data=' + encodeURIComponent( query ),
-						signal: this._abort.signal,
-					} );
-					if ( ! res.ok ) throw new Error( `Overpass ${ res.status }` );
-					const json = await res.json();
-					if ( this.enabled ) this._ingest( json.elements || [], center );
-					return;
+			const jobs = [];
+			for ( let ty = y0; ty <= y1; ty ++ ) {
 
-				} catch ( err ) {
+				for ( let tx = x0; tx <= x1; tx ++ ) jobs.push( [ tx, ty ] );
 
-					if ( err.name === 'AbortError' ) return;
-					console.warn( `Segmentation: ${ url } failed —`, err.message );
+			}
+
+			let done = 0;
+			const total = jobs.length;
+			this.status = `loading 0 / ${ total } tiles…`;
+
+			const worker = async () => {
+
+				while ( jobs.length ) {
+
+					const [ tx, ty ] = jobs.shift();
+					try {
+
+						const url = template
+							.replace( '{z}', ZOOM ).replace( '{x}', tx ).replace( '{y}', ty );
+						const buf = await ( await fetch( url ) ).arrayBuffer();
+						this._drawTile( new VectorTile( new PbfReader( buf ) ), tx, ty );
+
+					} catch ( err ) {
+
+						console.warn( `Segmentation: tile ${ tx }/${ ty } failed —`, err.message );
+
+					}
+
+					done ++;
+					this.status = `loading ${ done } / ${ total } tiles…`;
+					this.texture.needsUpdate = true; // paint progressively
+
+				}
+
+			};
+
+			await Promise.all( Array.from( { length: CONCURRENCY }, worker ) );
+
+			this._pixels = this.ctx.getImageData( 0, 0, this.canvas.width, this.canvas.height );
+			this.texture.needsUpdate = true;
+			this.ready = true;
+			this.status = 'whole play area segmented';
+
+		} catch ( err ) {
+
+			console.error( 'Segmentation build failed:', err );
+			this.status = 'load failed — toggle to retry';
+			this._building = false;
+			return;
+
+		}
+
+		this._building = false;
+
+	}
+
+	// --- rasterization ---------------------------------------------------------------
+
+	_drawTile( vt, tx, ty ) {
+
+		const ctx = this.ctx;
+		this._tx = tx; // current tile coords for feature.toGeoJSON
+		this._ty = ty;
+
+		// clip to the tile's own rect so buffer geometry doesn't double-paint
+		const left = this._px( tileToLon( tx, ZOOM ) );
+		const right = this._px( tileToLon( tx + 1, ZOOM ) );
+		const top = this._py( tileToLat( ty, ZOOM ) );
+		const bottom = this._py( tileToLat( ty + 1, ZOOM ) );
+
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect( left, top, right - left, bottom - top );
+		ctx.clip();
+
+		// paint order: grass under water under roads under buildings
+		this._layer( vt, 'park', () => true, SEGMENT_COLORS.grass );
+		this._layer( vt, 'landcover', ( p ) => GRASS_LANDCOVER.has( p.class ), SEGMENT_COLORS.grass );
+		this._layer( vt, 'landuse', ( p ) => GRASS_LANDUSE.has( p.class ), SEGMENT_COLORS.grass );
+		this._layer( vt, 'water', () => true, SEGMENT_COLORS.water );
+		this._roadLayer( vt );
+		this._layer( vt, 'building', () => true, SEGMENT_COLORS.building );
+
+		ctx.restore();
+
+	}
+
+	_layer( vt, name, accept, color ) {
+
+		const layer = vt.layers[ name ];
+		if ( ! layer ) return;
+
+		const ctx = this.ctx;
+		ctx.fillStyle = color;
+
+		for ( let i = 0; i < layer.length; i ++ ) {
+
+			const feature = layer.feature( i );
+			if ( feature.type !== 3 || ! accept( feature.properties ) ) continue; // polygons only
+
+			const geom = feature.toGeoJSON( this._tx, this._ty, ZOOM ).geometry;
+			ctx.beginPath();
+			const polys = geom.type === 'Polygon' ? [ geom.coordinates ] : geom.coordinates;
+			for ( const rings of polys ) {
+
+				for ( const ring of rings ) this._ring( ring );
+
+			}
+
+			ctx.fill( 'evenodd' );
+
+		}
+
+	}
+
+	_roadLayer( vt ) {
+
+		const layer = vt.layers.transportation;
+		if ( ! layer ) return;
+
+		const ctx = this.ctx;
+		ctx.strokeStyle = SEGMENT_COLORS.road;
+		ctx.lineCap = 'round';
+		ctx.lineJoin = 'round';
+
+		for ( let i = 0; i < layer.length; i ++ ) {
+
+			const feature = layer.feature( i );
+			const p = feature.properties;
+			const width = ROAD_WIDTHS[ p.class ];
+			if ( feature.type !== 2 || ! width ) continue;   // lines only, road classes only
+			if ( p.brunnel === 'tunnel' ) continue;          // BART under the Bay is not a road
+
+			const geom = feature.toGeoJSON( this._tx, this._ty, ZOOM ).geometry;
+			const lines = geom.type === 'LineString' ? [ geom.coordinates ] : geom.coordinates;
+
+			ctx.lineWidth = Math.max( width / this._mPerPx, 1.2 );
+			ctx.beginPath();
+			for ( const line of lines ) {
+
+				for ( let j = 0; j < line.length; j ++ ) {
+
+					const px = this._px( line[ j ][ 0 ] );
+					const py = this._py( line[ j ][ 1 ] );
+					if ( j === 0 ) ctx.moveTo( px, py );
+					else ctx.lineTo( px, py );
 
 				}
 
 			}
 
-			this.status = 'fetch failed — retrying soon';
-
-		} finally {
-
-			this._fetching = false;
+			ctx.stroke();
 
 		}
 
 	}
 
-	_ingest( elements, center ) {
+	_ring( ring ) {
 
-		const polys = { building: [], water: [], grass: [] };
-		const roads = [];
+		const ctx = this.ctx;
+		for ( let j = 0; j < ring.length; j ++ ) {
 
-		for ( const el of elements ) {
-
-			if ( el.type !== 'way' || ! el.geometry || ! el.tags ) continue;
-			const tags = el.tags;
-
-			const pts = el.geometry.map( ( g ) => {
-
-				this.latLonToLocal( g.lat, g.lon, 0, _v );
-				return { x: _v.x, z: _v.z };
-
-			} );
-
-			if ( tags.building ) {
-
-				const p = makePoly( pts );
-				if ( p ) polys.building.push( p );
-
-			} else if ( tags.highway ) {
-
-				const half = ( ROAD_WIDTHS[ tags.highway ] || 7 ) / 2;
-				roads.push( makeRoad( pts, half ) );
-
-			} else if ( tags.natural === 'water' || tags.waterway === 'riverbank' || WATER_LANDUSE.has( tags.landuse ) ) {
-
-				const p = makePoly( pts );
-				if ( p ) polys.water.push( p );
-
-			} else if ( GRASS_LEISURE.has( tags.leisure ) || GRASS_LANDUSE.has( tags.landuse ) || GRASS_NATURAL.has( tags.natural ) ) {
-
-				const p = makePoly( pts );
-				if ( p ) polys.grass.push( p );
-
-			}
+			const px = this._px( ring[ j ][ 0 ] );
+			const py = this._py( ring[ j ][ 1 ] );
+			if ( j === 0 ) ctx.moveTo( px, py );
+			else ctx.lineTo( px, py );
 
 		}
 
-		this._polys = polys;
-		this._roads = roads;
-		this._haveData = true;
-		this._center.copy( center );
-		this._haveZone = true;
-
-		// sea level: the local origin sits in the middle of the bay
-		if ( this._seaY === null ) {
-
-			const y = this._groundY( 0, 0 );
-			if ( y !== null ) this._seaY = y;
-
-		}
-
-		this._queueGridBuild( center );
+		ctx.closePath();
 
 	}
 
-	// --- grid rasterization -----------------------------------------------------------
+	_px( lon ) {
 
-	_queueGridBuild( center ) {
-
-		const jobs = this._jobs;
-		jobs.length = 0;
-		this.status = 'painting segments…';
-
-		const n = Math.floor( ( ZONE_RADIUS * 2 ) / CELL );
-		const half = CELL / 2;
-		const inset = CELL * 0.47; // slight gap draws the grid lines
-		const positions = [];
-		const colors = [];
-		const indices = [];
-		const counts = { building: 0, road: 0, grass: 0, water: 0 };
-		const colorRGB = {};
-		for ( const key in SEGMENT_COLORS ) {
-
-			const c = SEGMENT_COLORS[ key ];
-			colorRGB[ key ] = [ ( c >> 16 & 255 ) / 255, ( c >> 8 & 255 ) / 255, ( c & 255 ) / 255 ];
-
-		}
-
-		for ( let iz = 0; iz < n; iz ++ ) {
-
-			jobs.push( () => {
-
-				const z = center.z - ZONE_RADIUS + iz * CELL + half;
-				for ( let ix = 0; ix < n; ix ++ ) {
-
-					const x = center.x - ZONE_RADIUS + ix * CELL + half;
-					const y = this._groundY( x, z );
-					if ( y === null ) continue;
-
-					const cls = this.classify( x, z, y );
-					if ( cls === 'other' ) continue;
-
-					counts[ cls ] ++;
-					const [ r, g, b ] = colorRGB[ cls ];
-					const base = positions.length / 3;
-					positions.push(
-						x - inset, y + LIFT, z - inset,
-						x + inset, y + LIFT, z - inset,
-						x + inset, y + LIFT, z + inset,
-						x - inset, y + LIFT, z + inset
-					);
-					for ( let k = 0; k < 4; k ++ ) colors.push( r, g, b );
-					indices.push( base, base + 2, base + 1, base, base + 3, base + 2 );
-
-				}
-
-			} );
-
-		}
-
-		jobs.push( () => this._swapGrid( positions, colors, indices, counts ) );
+		return ( lon - PLAY_BOUNDS.minLon ) / ( PLAY_BOUNDS.maxLon - PLAY_BOUNDS.minLon ) * this.canvas.width;
 
 	}
 
-	_swapGrid( positions, colors, indices, counts ) {
+	_py( lat ) {
 
-		this._disposeMesh();
-
-		const geo = new BufferGeometry();
-		geo.setAttribute( 'position', new BufferAttribute( new Float32Array( positions ), 3 ) );
-		geo.setAttribute( 'color', new BufferAttribute( new Float32Array( colors ), 3 ) );
-		geo.setIndex( indices );
-		geo.computeBoundingSphere();
-
-		this.mesh = new Mesh( geo, new MeshBasicMaterial( {
-			vertexColors: true,
-			transparent: true,
-			opacity: 0.5,
-			depthWrite: false,
-		} ) );
-		this.scene.add( this.mesh );
-
-		this.status = `${ counts.building } building · ${ counts.road } road · ${ counts.grass } grass · ${ counts.water } water cells`;
-
-	}
-
-	_disposeMesh() {
-
-		if ( ! this.mesh ) return;
-		this.scene.remove( this.mesh );
-		this.mesh.geometry.dispose();
-		this.mesh.material.dispose();
-		this.mesh = null;
-
-	}
-
-	_groundY( x, z ) {
-
-		this._raycaster.ray.origin.set( x, 1200, z );
-		this._raycaster.ray.direction.set( 0, - 1, 0 );
-		this._raycaster.near = 0;
-		this._raycaster.far = 2400;
-		const hit = this._raycaster.intersectObject( this.tilesGroup, true )[ 0 ];
-		return hit ? hit.point.y : null;
+		return ( PLAY_BOUNDS.maxLat - lat ) / ( PLAY_BOUNDS.maxLat - PLAY_BOUNDS.minLat ) * this.canvas.height;
 
 	}
 
 }
 
-// --- geometry helpers -----------------------------------------------------------
+// slippy-map tile math
+function lonToTile( lon, z ) {
 
-function makePoly( pts ) {
-
-	if ( pts.length > 1 ) {
-
-		const a = pts[ 0 ];
-		const b = pts[ pts.length - 1 ];
-		if ( Math.hypot( a.x - b.x, a.z - b.z ) < 0.01 ) pts.pop();
-
-	}
-
-	if ( pts.length < 3 ) return null;
-
-	const xs = pts.map( ( p ) => p.x );
-	const zs = pts.map( ( p ) => p.z );
-	return { xs, zs, ...bboxOf( pts, 0 ) };
+	return Math.floor( ( lon + 180 ) / 360 * ( 1 << z ) );
 
 }
 
-function makeRoad( pts, half ) {
+function latToTile( lat, z ) {
 
-	return { pts, half, ...bboxOf( pts, half + 1 ) };
-
-}
-
-function bboxOf( pts, pad ) {
-
-	let minX = Infinity, maxX = - Infinity, minZ = Infinity, maxZ = - Infinity;
-	for ( const p of pts ) {
-
-		if ( p.x < minX ) minX = p.x;
-		if ( p.x > maxX ) maxX = p.x;
-		if ( p.z < minZ ) minZ = p.z;
-		if ( p.z > maxZ ) maxZ = p.z;
-
-	}
-
-	return { minX: minX - pad, maxX: maxX + pad, minZ: minZ - pad, maxZ: maxZ + pad };
+	const r = lat * Math.PI / 180;
+	return Math.floor( ( 1 - Math.log( Math.tan( r ) + 1 / Math.cos( r ) ) / Math.PI ) / 2 * ( 1 << z ) );
 
 }
 
-function inBBox( b, x, z ) {
+function tileToLon( x, z ) {
 
-	return x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ;
-
-}
-
-// even-odd rule point-in-polygon
-function pointInPoly( x, z, xs, zs ) {
-
-	let inside = false;
-	for ( let i = 0, j = xs.length - 1; i < xs.length; j = i ++ ) {
-
-		if ( ( zs[ i ] > z ) !== ( zs[ j ] > z ) &&
-			x < ( xs[ j ] - xs[ i ] ) * ( z - zs[ i ] ) / ( zs[ j ] - zs[ i ] ) + xs[ i ] ) {
-
-			inside = ! inside;
-
-		}
-
-	}
-
-	return inside;
+	return x / ( 1 << z ) * 360 - 180;
 
 }
 
-function nearPolyline( x, z, pts, half ) {
+function tileToLat( y, z ) {
 
-	const r2 = half * half;
-	for ( let i = 0; i < pts.length - 1; i ++ ) {
-
-		const ax = pts[ i ].x, az = pts[ i ].z;
-		const bx = pts[ i + 1 ].x, bz = pts[ i + 1 ].z;
-		const dx = bx - ax, dz = bz - az;
-		const len2 = dx * dx + dz * dz;
-		let t = len2 > 0 ? ( ( x - ax ) * dx + ( z - az ) * dz ) / len2 : 0;
-		t = Math.max( 0, Math.min( 1, t ) );
-		const px = ax + dx * t - x;
-		const pz = az + dz * t - z;
-		if ( px * px + pz * pz <= r2 ) return true;
-
-	}
-
-	return false;
+	const n = Math.PI - 2 * Math.PI * y / ( 1 << z );
+	return 180 / Math.PI * Math.atan( 0.5 * ( Math.exp( n ) - Math.exp( - n ) ) );
 
 }

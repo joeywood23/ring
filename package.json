@@ -9,7 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
     "3d-tiles-renderer": "^0.4.28",
+    "pbf": "^5.1.0",
     "three": "^0.185.1",
     "three-mesh-bvh": "^0.9.10"
   },

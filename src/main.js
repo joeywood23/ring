@@ -152,8 +152,8 @@ function init( apiKey ) {
 
 		} );
 
-		// tiles streamed in while riding, aiming, or segmenting need raycast acceleration
-		if ( groundMode() || ( targeter && targeter.active ) || ( segments && segments.enabled ) ) ensureBVH( tileScene );
+		// tiles streamed in while riding or aiming need raycast acceleration
+		if ( groundMode() || ( targeter && targeter.active ) ) ensureBVH( tileScene );
 
 	} );
 
@@ -265,12 +265,7 @@ function init( apiKey ) {
 		localToLatLon,
 	} );
 
-	segments = new Segmentation( {
-		scene,
-		tilesGroup: tiles.group,
-		latLonToLocal,
-		localToLatLon,
-	} );
+	segments = new Segmentation( { playArea } );
 
 	bindUI();
 	window.addEventListener( 'resize', onResize );
@@ -558,7 +553,6 @@ function flyToView( camPos, target ) {
 
 const _dir = new Vector3();
 const _center = new Vector3();
-const _segFocus = new Vector3();
 
 function updateSurfaceHUD( mode ) {
 
@@ -570,7 +564,7 @@ function updateSurfaceHUD( mode ) {
 
 	}
 
-	const cls = segments.classify( mode.pos.x, mode.pos.z, mode.lastGroundY );
+	const cls = segments.classify( mode.pos.x, mode.pos.z );
 	el.textContent = cls === 'other' ? '' : cls;
 	el.dataset.cls = cls;
 
@@ -622,13 +616,7 @@ function animate() {
 
 	}
 
-	// segmentation follows the player, or the map view target when flying free
-	if ( segments.enabled ) {
-
-		segments.update( mode ? mode.pos : currentViewTarget( _segFocus ) );
-		updateSurfaceHUD( mode );
-
-	}
+	if ( segments.enabled ) updateSurfaceHUD( mode );
 
 	targeter.update( dt );
 	updateProgress();
@@ -772,7 +760,6 @@ function bindUI() {
 	const segBox = document.getElementById( 'segment' );
 	segBox.addEventListener( 'change', ( e ) => {
 
-		if ( e.target.checked ) ensureBVH( tiles.group ); // grid raycasts need it
 		segments.setActive( e.target.checked );
 		if ( ! e.target.checked ) document.getElementById( 'hud-surface' ).textContent = '';
 
@@ -851,11 +838,8 @@ function updateAttributions() {
 
 	if ( ! tiles || ! tiles.getAttributions ) return;
 	const parts = tiles.getAttributions( [] ).map( ( a ) => a.value );
-	if ( ( detail && detail.enabled ) || ( segments && segments.enabled ) ) {
-
-		parts.push( 'Map data © OpenStreetMap contributors' );
-
-	}
+	if ( detail && detail.enabled ) parts.push( detail.attribution );
+	if ( segments && segments.enabled ) parts.push( 'OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors' );
 	document.getElementById( 'attributions' ).textContent = parts.join( ' · ' );
 
 }
