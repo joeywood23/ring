@@ -28,6 +28,8 @@ import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
 
 const KEY_STORAGE = 'ring_google_tiles_key';
+// Referrer-restricted public key; a key saved via the modal takes precedence.
+const DEFAULT_KEY = 'AIzaSyA2l_pwBwS5_Qyw0b4tDsULIKPGhgoAmpA';
 const BAY_CENTER = { lat: 37.79, lon: - 122.35 }; // local frame origin, mid-bay
 
 const state = {
@@ -52,17 +54,14 @@ const keyInput = document.getElementById( 'key-input' );
 const keyError = document.getElementById( 'key-error' );
 
 const storedKey = localStorage.getItem( KEY_STORAGE );
-if ( storedKey ) {
-
-	init( storedKey );
-
-} else {
-
-	keyModal.classList.remove( 'hidden' );
-
-}
+init( storedKey || DEFAULT_KEY );
 
 document.getElementById( 'key-save' ).addEventListener( 'click', submitKey );
+keyModal.addEventListener( 'click', ( e ) => {
+
+	if ( e.target === keyModal ) keyModal.classList.add( 'hidden' );
+
+} );
 keyInput.addEventListener( 'keydown', ( e ) => {
 
 	if ( e.key === 'Enter' ) submitKey();
@@ -90,7 +89,7 @@ function showKeyError( message ) {
 document.getElementById( 'change-key' ).addEventListener( 'click', () => {
 
 	localStorage.removeItem( KEY_STORAGE );
-	window.location.reload();
+	keyModal.classList.remove( 'hidden' );
 
 } );
 
