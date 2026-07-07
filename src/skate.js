@@ -38,22 +38,35 @@ export function ensureBVH( object ) {
 }
 
 // --- physics tuning (metres, seconds) --------------------------------------
-const GRAV_SLOPE = 9.8;    // gravity projected along the ground plane
-const GRAV_AIR = 15;       // heavier air gravity for snappy, game-like ollies
-const PUSH_ACCEL = 7;      // W
-const MAX_PUSH_SPEED = 14; // pushing can't exceed this; hills can
-const BRAKE = 9;           // S
-const ROLL_FRICTION = 0.05;
-const DRAG = 0.005;        // quadratic, sets downhill terminal velocity
-const GRIP = 7;            // lateral-slip damping rate — how hard the wheels carve
-const JUMP_SPEED = 5.5;
-const MAX_SPEED = 50;
-
-// Live-tunable multipliers — the panel sliders write these while skating.
+// Every property is live-tunable from the panel's physics sliders.
 export const PHYSICS = {
-	gravity: 1,  // scales slope pull and air gravity
-	friction: 1, // scales rolling resistance + aero drag
+	gravity: 9.8,       // slope pull projected along the ground plane
+	airGravity: 15,     // heavier air gravity for snappy, game-like ollies
+	push: 7,            // W acceleration
+	maxPush: 14,        // pushing can't exceed this; hills can
+	brake: 9,           // S deceleration
+	rollFriction: 0.05, // constant rolling resistance
+	drag: 0.005,        // quadratic, sets downhill terminal velocity
+	grip: 7,            // lateral-slip damping rate — how hard the wheels carve
+	turnRate: 2.5,      // steering rate at low speed
+	jump: 5.5,          // ollie pop velocity
+	maxSpeed: 50,
 };
+
+// [ key, label, min, max, step ] — spec the panel builds its sliders from
+export const PHYSICS_CONTROLS = [
+	[ 'gravity', 'Gravity', 0, 30, 0.1 ],
+	[ 'airGravity', 'Air grav', 0, 40, 0.1 ],
+	[ 'push', 'Push', 0, 25, 0.1 ],
+	[ 'maxPush', 'Push cap', 1, 40, 0.5 ],
+	[ 'brake', 'Brake', 0, 30, 0.5 ],
+	[ 'rollFriction', 'Roll fric', 0, 1, 0.005 ],
+	[ 'drag', 'Drag', 0, 0.03, 0.0005 ],
+	[ 'grip', 'Grip', 0.5, 20, 0.1 ],
+	[ 'turnRate', 'Turn', 0.5, 6, 0.05 ],
+	[ 'jump', 'Ollie', 0, 15, 0.1 ],
+	[ 'maxSpeed', 'Max speed', 5, 100, 1 ],
+];
 const STEP_UP = 0.5;       // curbs and small ledges roll over
 const SNAP_DOWN = 1.2;     // stay glued to ground over bumps below this drop
 const WALL_NORMAL_Y = 0.55; // steeper than this (normal.y below) = wall, not ramp
@@ -353,7 +366,9 @@ export class SkateMode {
 
 		// steering — tighter at low speed, looser at high speed, reduced in air
 		const turn = ( keys.has( 'KeyA' ) ? 1 : 0 ) - ( keys.has( 'KeyD' ) ? 1 : 0 );
-		const turnRate = this.onGround ? 2.5 / ( 1 + speed / 14 ) : 2.0;
+		const turnRate = this.onGround
+			? PHYSICS.turnRate / ( 1 + speed / 14 )
+			: PHYSICS.turnRate * 0.8;
 		this.yaw += turn * turnRate * h;
 
 		if ( this.onGround ) {
@@ -362,7 +377,7 @@ export class SkateMode {
 
 			if ( keys.has( 'Space' ) && ! this._jumpHeld ) {
 
-				vel.y += JUMP_SPEED;
+				vel.y += PHYSICS.jump;
 				this.onGround = false;
 				this._jumpHeld = true;
 				this.audio.jump();
@@ -371,7 +386,7 @@ export class SkateMode {
 
 		} else {
 
-			vel.y -= GRAV_AIR * PHYSICS.gravity * h;
+			vel.y -= PHYSICS.airGravity * h;
 
 		}
 
@@ -460,7 +475,7 @@ export class SkateMode {
 
 		// gravity projected onto the ground plane — hills accelerate you
 		_acc.copy( DOWN ).addScaledVector( n, n.y );
-		vel.addScaledVector( _acc, GRAV_SLOPE * PHYSICS.gravity * h );
+		vel.addScaledVector( _acc, PHYSICS.gravity * h );
 
 		// board forward projected onto the ground plane
 		_bf.copy( fwd ).addScaledVector( n, - fwd.dot( n ) ).normalize();
@@ -468,18 +483,18 @@ export class SkateMode {
 		// carve: wheels grip sideways, roll freely forward
 		const vF = vel.dot( _bf );
 		_lat.copy( vel ).addScaledVector( _bf, - vF );
-		_lat.multiplyScalar( Math.exp( - GRIP * h ) );
+		_lat.multiplyScalar( Math.exp( - PHYSICS.grip * h ) );
 		vel.copy( _lat ).addScaledVector( _bf, vF );
 
-		if ( keys.has( 'KeyW' ) && vF < MAX_PUSH_SPEED ) {
+		if ( keys.has( 'KeyW' ) && vF < PHYSICS.maxPush ) {
 
-			vel.addScaledVector( _bf, PUSH_ACCEL * h );
+			vel.addScaledVector( _bf, PHYSICS.push * h );
 
 		}
 
 		if ( keys.has( 'KeyS' ) && speed > 0.01 ) {
 
-			vel.multiplyScalar( Math.max( 0, 1 - ( BRAKE * h ) / speed ) );
+			vel.multiplyScalar( Math.max( 0, 1 - ( PHYSICS.brake * h ) / speed ) );
 
 		}
 
@@ -487,12 +502,12 @@ export class SkateMode {
 		const sp = vel.length();
 		if ( sp > 0.001 ) {
 
-			const decel = ( ROLL_FRICTION + DRAG * sp * sp ) * PHYSICS.friction * h;
+			const decel = ( PHYSICS.rollFriction + PHYSICS.drag * sp * sp ) * h;
 			vel.multiplyScalar( Math.max( 0, 1 - decel / sp ) );
 
 		}
 
-		if ( sp > MAX_SPEED ) vel.multiplyScalar( MAX_SPEED / sp );
+		if ( sp > PHYSICS.maxSpeed ) vel.multiplyScalar( PHYSICS.maxSpeed / sp );
 
 	}
 

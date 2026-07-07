@@ -22,7 +22,7 @@ import {
 import { distortionUniforms, patchMaterial, EFFECTS, COLOR_MODES } from './effects.js';
 import { LOCATIONS, cameraGeoForLocation } from './locations.js';
 import { Minimap } from './minimap.js';
-import { SkateMode, ensureBVH, PHYSICS } from './skate.js';
+import { SkateMode, ensureBVH, PHYSICS, PHYSICS_CONTROLS } from './skate.js';
 import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
@@ -531,6 +531,64 @@ function buildButtonGroup( containerId, items, onSelect, activeIndex = 0 ) {
 
 }
 
+// One slider per PHYSICS property, live-updating the simulation while riding.
+function buildPhysicsControls() {
+
+	const container = document.getElementById( 'physics-controls' );
+	const defaults = { ...PHYSICS };
+	const rows = [];
+
+	for ( const [ key, label, min, max, step ] of PHYSICS_CONTROLS ) {
+
+		const row = document.createElement( 'label' );
+		row.className = 'slider-row';
+
+		const name = document.createElement( 'span' );
+		name.textContent = label;
+
+		const input = document.createElement( 'input' );
+		input.type = 'range';
+		input.min = min;
+		input.max = max;
+		input.step = step;
+		input.value = PHYSICS[ key ];
+
+		const val = document.createElement( 'span' );
+		val.className = 'slider-val';
+		const decimals = ( String( step ).split( '.' )[ 1 ] || '' ).length;
+		const show = () => ( val.textContent = PHYSICS[ key ].toFixed( decimals ) );
+		show();
+
+		input.addEventListener( 'input', () => {
+
+			PHYSICS[ key ] = parseFloat( input.value );
+			show();
+
+		} );
+		// release focus so WASD isn't swallowed by the slider while skating
+		input.addEventListener( 'change', () => input.blur() );
+
+		row.append( name, input, val );
+		container.appendChild( row );
+		rows.push( { key, input, show } );
+
+	}
+
+	document.getElementById( 'physics-reset' ).addEventListener( 'click', ( e ) => {
+
+		for ( const { key, input, show } of rows ) {
+
+			PHYSICS[ key ] = defaults[ key ];
+			input.value = defaults[ key ];
+			show();
+
+		}
+		e.target.blur();
+
+	} );
+
+}
+
 function bindUI() {
 
 	document.getElementById( 'drop-in' ).addEventListener( 'click', toggleDropTargeting );
@@ -550,18 +608,7 @@ function bindUI() {
 	updateUpscaleStatus();
 	setInterval( updateUpscaleStatus, 1000 );
 
-	// physics sliders blur on release so WASD isn't swallowed by the input
-	for ( const id of [ 'gravity', 'friction' ] ) {
-
-		const slider = document.getElementById( id );
-		slider.addEventListener( 'input', ( e ) => {
-
-			PHYSICS[ id ] = parseFloat( e.target.value );
-
-		} );
-		slider.addEventListener( 'change', ( e ) => e.target.blur() );
-
-	}
+	buildPhysicsControls();
 
 	buildButtonGroup( 'locations', LOCATIONS, ( loc ) => flyTo( loc ) );
 	buildButtonGroup( 'effects', EFFECTS, ( fx ) => {

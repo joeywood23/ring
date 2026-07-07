@@ -161,6 +161,13 @@ canvas { display: block; }
 }
 .slider-row span { width: 62px; flex-shrink: 0; }
 .slider-row input[type="range"] { flex: 1; accent-color: #7c4dff; }
+.slider-row .slider-val {
+  width: 40px;
+  text-align: right;
+  font-size: 10.5px;
+  color: #8a93a8;
+  font-variant-numeric: tabular-nums;
+}
 
 .check-row {
   display: flex;
