@@ -25,6 +25,7 @@ import { Minimap } from './minimap.js';
 import { SkateMode, ensureBVH, PHYSICS, PHYSICS_CONTROLS } from './skate.js';
 import { SkatePark } from './props.js';
 import { PedestrianMode } from './walk.js';
+import { PigeonMode } from './fly.js';
 import { SkateAudio } from './sound.js';
 import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
@@ -44,7 +45,8 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, walker, targeter, detail, park;
+let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park;
+let dropAs = 'skate'; // which mode the pending drop-in enters
 const playArea = new PlayArea();
 const clock = new Clock();
 
@@ -230,6 +232,17 @@ function init( apiKey ) {
 		onExit: onModeExit,
 	} );
 
+	pigeon = new PigeonMode( {
+		scene,
+		camera,
+		playArea,
+		park,
+		audio,
+		hud,
+		tilesGroup: tiles.group,
+		onExit: onModeExit,
+	} );
+
 	targeter = new DropTargeter( {
 		scene,
 		camera,
@@ -352,39 +365,59 @@ function flyToPoint( point ) {
 // Skate mode
 // ---------------------------------------------------------------------------
 
-// the active ground mode (skate or pedestrian), or null when flying free
+// the active embodied mode (skate, pedestrian, or pigeon), or null when
+// flying the free map camera
 function groundMode() {
 
 	if ( skate && skate.active ) return skate;
 	if ( walker && walker.active ) return walker;
+	if ( pigeon && pigeon.active ) return pigeon;
 	return null;
 
 }
 
+const DROP_LABELS = { skate: '🛹 Skate', pigeon: '🐦 Pigeon' };
+
 function setDropButtonState( targeting ) {
 
-	const btn = document.getElementById( 'drop-skate' );
-	btn.classList.toggle( 'targeting', targeting );
-	btn.textContent = targeting ? '✕ Cancel — pick a spot' : '🛹 Drop In';
+	for ( const m in DROP_LABELS ) {
+
+		const btn = document.getElementById( `drop-${ m }` );
+		const on = targeting && m === dropAs;
+		btn.classList.toggle( 'targeting', on );
+		btn.textContent = on ? '✕ Cancel' : DROP_LABELS[ m ];
+
+	}
+
 	document.getElementById( 'target-hint' ).classList.toggle( 'hidden', ! targeting );
 
 }
 
-function toggleDropTargeting() {
+function toggleDropTargeting( as ) {
 
 	if ( ! state.rootLoaded || groundMode() ) return;
 
 	if ( targeter.active ) {
 
-		targeter.cancel(); // resets the button via onCancel
+		if ( dropAs === as ) {
 
-	} else {
+			targeter.cancel(); // resets the buttons via onCancel
 
-		ensureBVH( tiles.group ); // one-time raycast prep for the loaded tiles
-		targeter.begin();
-		setDropButtonState( true );
+		} else {
+
+			dropAs = as; // re-aim the pending drop at the other mode
+			setDropButtonState( true );
+
+		}
+
+		return;
 
 	}
+
+	dropAs = as;
+	ensureBVH( tiles.group ); // one-time raycast prep for the loaded tiles
+	targeter.begin();
+	setDropButtonState( true );
 
 }
 
@@ -397,17 +430,19 @@ function enterModeAt( point ) {
 
 	playArea.constrain( point, null, 30 );
 	camera.getWorldDirection( _dir ); // face the way the camera was looking
-	skate.enter( point, _dir ); // always arrive on the board
+	if ( dropAs === 'pigeon' ) pigeon.enter( point, _dir );
+	else skate.enter( point, _dir ); // board and bird never mix — Esc to switch
 	detail.setActive( state.upscale );
 	updateUpscaleStatus();
 
 }
 
-// E: hop off the board / back on, in place — momentum and camera carry over
+// E: hop off the board / back on, in place — momentum and camera carry over.
+// Pigeons don't skateboard; the bird only exits via Esc.
 function toggleBoard() {
 
 	const cur = groundMode();
-	if ( ! cur || ! cur.onGround || cur.grinding ) return;
+	if ( ! cur || cur === pigeon || ! cur.onGround || cur.grinding ) return;
 
 	const point = cur.pos.clone();
 	const vel = cur.vel.clone();
@@ -444,7 +479,7 @@ const _spawnPt = new Vector3();
 function spawnProp( type ) {
 
 	const mode = groundMode();
-	if ( ! mode ) return;
+	if ( ! mode || ! mode.groundPointAhead ) return; // not from the air
 
 	const dist = type === 'ramp' ? 14 : 8;
 	const point = mode.groundPointAhead( dist, _spawnPt );
@@ -659,12 +694,16 @@ function buildPhysicsControls() {
 
 function bindUI() {
 
-	document.getElementById( 'drop-skate' ).addEventListener( 'click', ( e ) => {
+	for ( const m of [ 'skate', 'pigeon' ] ) {
 
-		toggleDropTargeting();
-		e.target.blur();
+		document.getElementById( `drop-${ m }` ).addEventListener( 'click', ( e ) => {
 
-	} );
+			toggleDropTargeting( m );
+			e.target.blur();
+
+		} );
+
+	}
 
 	const upscaleBox = document.getElementById( 'upscale' );
 	upscaleBox.checked = state.upscale;

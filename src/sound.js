@@ -84,6 +84,9 @@ export class SkateAudio {
 		// grind: resonant metallic scrape while on a rail
 		this.grind = this._noiseLoop( this._filter( 'bandpass', 2700, 5 ), 1.5 );
 
+		// wind: rises with airspeed (flight, big airs)
+		this.wind = this._noiseLoop( this._filter( 'lowpass', 400, 0.5 ), 0.8 );
+
 		this.running = true;
 		this._pushTimer = 0;
 
@@ -94,7 +97,7 @@ export class SkateAudio {
 		if ( ! this.running ) return;
 
 		const t = this.ctx.currentTime;
-		for ( const loop of [ this.roll, this.carve, this.skid, this.grind ] ) {
+		for ( const loop of [ this.roll, this.carve, this.skid, this.grind, this.wind ] ) {
 
 			// quick fade before stopping so the loop doesn't end on a click
 			loop.gain.gain.setTargetAtTime( 0, t, 0.04 );
@@ -127,6 +130,11 @@ export class SkateAudio {
 
 		const grindLevel = s.grinding ? Math.min( s.speed / 10, 1 ) * 0.45 : 0;
 		this.grind.gain.gain.setTargetAtTime( grindLevel, t, 0.03 );
+
+		const wind = s.wind || 0;
+		const windLevel = Math.pow( Math.min( wind / 28, 1 ), 1.5 ) * 0.45;
+		this.wind.gain.gain.setTargetAtTime( windLevel, t, 0.15 );
+		this.wind.filter.frequency.setTargetAtTime( 300 + wind * 25, t, 0.2 );
 
 		if ( s.grounded && s.pushing ) {
 
@@ -166,6 +174,30 @@ export class SkateAudio {
 		gain.connect( this.master );
 		src.start( t );
 		src.stop( t + 0.32 );
+
+	}
+
+	// one soft wing-beat whoosh
+	flap() {
+
+		if ( ! this.running ) return;
+
+		const t = this.ctx.currentTime;
+		const src = this.ctx.createBufferSource();
+		src.buffer = this.noise;
+		src.playbackRate.value = 0.45 + Math.random() * 0.15;
+
+		const filter = this._filter( 'bandpass', 380, 0.8 );
+		const gain = this.ctx.createGain();
+		gain.gain.setValueAtTime( 0, t );
+		gain.gain.linearRampToValueAtTime( 0.26, t + 0.05 );
+		gain.gain.exponentialRampToValueAtTime( 0.001, t + 0.2 );
+
+		src.connect( filter );
+		filter.connect( gain );
+		gain.connect( this.master );
+		src.start( t );
+		src.stop( t + 0.22 );
 
 	}
 
