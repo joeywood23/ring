@@ -153,8 +153,9 @@ function init( apiKey ) {
 
 		} );
 
-		// tiles streamed in while riding or aiming need raycast acceleration
-		if ( groundMode() || ( targeter && targeter.active ) ) ensureBVH( tileScene );
+		// tiles streamed in while riding, aiming, or fine-voxelizing need
+		// raycast acceleration
+		if ( groundMode() || ( targeter && targeter.active ) || ( voxels && voxels.needsBVH() ) ) ensureBVH( tileScene );
 
 	} );
 
@@ -555,6 +556,7 @@ function flyToView( camPos, target ) {
 
 const _dir = new Vector3();
 const _center = new Vector3();
+const _voxFocus = new Vector3();
 
 function updateSurfaceHUD( mode ) {
 
@@ -620,7 +622,8 @@ function animate() {
 
 	if ( segments.enabled ) updateSurfaceHUD( mode );
 
-	voxels.update(); // pumps any in-progress voxel build
+	// pump voxel builds; the fine patch follows the player or map view target
+	voxels.update( mode ? mode.pos : currentViewTarget( _voxFocus ) );
 
 	targeter.update( dt );
 	updateProgress();
@@ -792,7 +795,9 @@ function bindUI() {
 	} );
 	voxelSize.addEventListener( 'change', ( e ) => {
 
-		voxels.setSize( parseInt( e.target.value, 10 ) ); // rebuild on release
+		const size = parseInt( e.target.value, 10 );
+		if ( size < 8 && voxels.enabled ) ensureBVH( tiles.group ); // fine patch raycasts
+		voxels.setSize( size ); // rebuild on release
 		e.target.blur();
 
 	} );

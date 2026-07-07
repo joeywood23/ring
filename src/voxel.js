@@ -1,12 +1,18 @@
 import {
 	Vector3,
+	Vector2,
 	Raycaster,
 	Group,
 	Mesh,
 	BufferGeometry,
 	BufferAttribute,
 	MeshBasicMaterial,
+	MeshLambertMaterial,
+	InstancedMesh,
+	BoxGeometry,
 	Matrix4,
+	Color,
+	MathUtils,
 	DoubleSide,
 } from 'three';
 import { distortionUniforms } from './effects.js';
@@ -45,6 +51,17 @@ const IDX_RGB = [ PALETTE.other, PALETTE.building, PALETTE.road, PALETTE.grass, 
 
 const _m = new Matrix4();
 const _up = new Vector3( 0, 1, 0 );
+const _c = new Color();
+
+// below this size the whole-map data build can't scale (memory grows with
+// 1/size²) — a mesh-sampled fine patch takes over near the player instead
+const MIN_BASE_SIZE = 8;
+
+// hole carved in the base voxel map under the fine patch
+const fineUniforms = {
+	uFineCenter: { value: new Vector2() },
+	uFineRadius: { value: 0 },
+};
 
 export class VoxelWorld {
 
@@ -55,11 +72,12 @@ export class VoxelWorld {
 		this.segments = segments;
 		this.playArea = playArea;
 		this.terrain = new TerrainGrid();
+		this.fine = new FinePatch( { scene, tilesGroup, segments } );
 
 		this.enabled = false;
-		this.status = 'off';
+		this._status = 'off';
 		this.size = 16;       // requested; applied at build time
-		this.builtSize = 0;
+		this.builtSize = 0;   // base-layer size actually built
 
 		this.group = null;
 		this._jobs = [];
@@ -70,13 +88,34 @@ export class VoxelWorld {
 
 	}
 
+	get status() {
+
+		return this.fine.active ? `${ this._status } · fine: ${ this.fine.status }` : this._status;
+
+	}
+
+	set status( v ) {
+
+		this._status = v;
+
+	}
+
+	// sizes below the base minimum sample the real mesh — needs BVH raycasts
+	needsBVH() {
+
+		return this.enabled && this.size < MIN_BASE_SIZE;
+
+	}
+
 	setActive( value ) {
 
 		this.enabled = value;
+		this._applyFine();
 
 		if ( value ) {
 
-			if ( this.group && this.builtSize === this.size ) {
+			const baseSize = Math.max( this.size, MIN_BASE_SIZE );
+			if ( this.group && this.builtSize === baseSize ) {
 
 				this.group.visible = true;
 				distortionUniforms.uVoxelRadius.value = 1e7;
@@ -101,11 +140,21 @@ export class VoxelWorld {
 	setSize( size ) {
 
 		this.size = size;
-		if ( this.enabled && this.builtSize !== size && ! this._building ) this._build();
+		this._applyFine();
+		const baseSize = Math.max( size, MIN_BASE_SIZE );
+		if ( this.enabled && this.builtSize !== baseSize && ! this._building ) this._build();
 
 	}
 
-	update() {
+	_applyFine() {
+
+		this.fine.setSize( this.enabled && this.size < MIN_BASE_SIZE ? this.size : 0 );
+
+	}
+
+	update( focus ) {
+
+		this.fine.update( focus );
 
 		if ( ! this._jobs.length ) return;
 
@@ -123,7 +172,7 @@ export class VoxelWorld {
 	async _build() {
 
 		this._building = true;
-		const size = this.size;
+		const size = Math.max( this.size, MIN_BASE_SIZE ); // base layer size floor
 
 		try {
 
@@ -231,6 +280,24 @@ export class VoxelWorld {
 		group.applyMatrix4( _m );
 
 		const material = new MeshBasicMaterial( { vertexColors: true, side: DoubleSide } );
+
+		// carve a hole in the base map under the fine patch so the two layers
+		// never interleave
+		material.onBeforeCompile = ( shader ) => {
+
+			Object.assign( shader.uniforms, fineUniforms );
+			shader.vertexShader = 'varying vec3 vVoxWorld;\n' + shader.vertexShader.replace(
+				'#include <begin_vertex>',
+				'#include <begin_vertex>\n\tvVoxWorld = ( modelMatrix * vec4( position, 1.0 ) ).xyz;'
+			);
+			shader.fragmentShader = 'uniform vec2 uFineCenter;\nuniform float uFineRadius;\nvarying vec3 vVoxWorld;\n' +
+				shader.fragmentShader.replace(
+					'#include <color_fragment>',
+					'#include <color_fragment>\n\tif ( uFineRadius > 0.0 && length( vVoxWorld.xz - uFineCenter ) < uFineRadius ) discard;'
+				);
+
+		};
+		material.customProgramCacheKey = () => 'voxel-base-1';
 		const chunksX = Math.ceil( nx / CHUNK );
 		const chunksZ = Math.ceil( nz / CHUNK );
 		let built = 0;
@@ -440,5 +507,257 @@ export class VoxelWorld {
 		this.group = null;
 
 	}
+
+}
+
+// Fine-detail voxel patch for sizes below the base minimum: samples the real
+// photogrammetry mesh with BVH raycasts (true 1m detail — bridges, trees,
+// facades), rendered as instanced cubes in a disc that follows the player.
+// The base map is shader-discarded underneath (fineUniforms).
+
+const FINE_COLUMNS = 200;  // grid resolution — radius scales with voxel size
+const FINE_MAX_COLUMN = 24;
+const FINE_BUDGET_MS = 5;
+
+class FinePatch {
+
+	constructor( { scene, tilesGroup, segments } ) {
+
+		this.scene = scene;
+		this.tilesGroup = tilesGroup;
+		this.segments = segments;
+
+		this.active = false;
+		this.size = 0;
+		this.status = 'off';
+
+		this.mesh = null;
+		this._center = new Vector3();
+		this._have = false;
+		this._jobs = [];
+		this._building = false;
+
+		this._raycaster = new Raycaster();
+		this._raycaster.firstHitOnly = true;
+
+	}
+
+	get radius() {
+
+		return this.size * FINE_COLUMNS / 2;
+
+	}
+
+	setSize( size ) {
+
+		if ( size === this.size ) return;
+		this.size = size;
+		this.active = size > 0;
+		this._have = false;
+		this._jobs.length = 0;
+		this._building = false;
+
+		if ( ! this.active ) {
+
+			this._dispose();
+			fineUniforms.uFineRadius.value = 0;
+			this.status = 'off';
+
+		}
+
+	}
+
+	update( focus ) {
+
+		if ( ! this.active || ! focus ) return;
+
+		if ( ( ! this._have || focus.distanceTo( this._center ) > this.radius * 0.45 ) && ! this._building ) {
+
+			this._queueBuild( focus.clone() );
+
+		}
+
+		const start = performance.now();
+		while ( this._jobs.length && performance.now() - start < FINE_BUDGET_MS ) {
+
+			this._jobs.shift()();
+
+		}
+
+	}
+
+	_top( x, z ) {
+
+		this._raycaster.ray.origin.set( x, 1500, z );
+		this._raycaster.ray.direction.set( 0, - 1, 0 );
+		this._raycaster.near = 0;
+		this._raycaster.far = 3000;
+		const hit = this._raycaster.intersectObject( this.tilesGroup, true )[ 0 ];
+		return hit ? hit.point.y : NaN;
+
+	}
+
+	_queueBuild( center ) {
+
+		this._building = true;
+		const jobs = this._jobs;
+		jobs.length = 0;
+
+		const size = this.size;
+		const radius = this.radius;
+		const n = FINE_COLUMNS;
+		const heights = new Float32Array( n * n ).fill( NaN );
+		const x0 = center.x - radius + size / 2;
+		const z0 = center.z - radius + size / 2;
+
+		for ( let iz = 0; iz < n; iz ++ ) {
+
+			jobs.push( () => {
+
+				const z = z0 + iz * size;
+				for ( let ix = 0; ix < n; ix ++ ) {
+
+					const x = x0 + ix * size;
+					const dx = x - center.x;
+					const dz = z - center.z;
+					if ( dx * dx + dz * dz > radius * radius ) continue; // disc
+					heights[ iz * n + ix ] = this._top( x, z );
+
+				}
+
+				this.status = `sampling ${ Math.round( ( iz + 1 ) / n * 100 ) }%`;
+
+			} );
+
+		}
+
+		jobs.push( () => this._buildInstances( center, n, heights, x0, z0 ) );
+
+	}
+
+	_buildInstances( center, n, heights, x0, z0 ) {
+
+		const size = this.size;
+
+		const tops = new Int32Array( n * n );
+		const depths = new Int32Array( n * n );
+		let count = 0;
+
+		for ( let iz = 0; iz < n; iz ++ ) {
+
+			for ( let ix = 0; ix < n; ix ++ ) {
+
+				const i = iz * n + ix;
+				const h = heights[ i ];
+				if ( Number.isNaN( h ) ) continue;
+
+				const top = Math.round( h / size );
+				tops[ i ] = top;
+
+				let low = top;
+				for ( const j of [ i - 1, i + 1, i - n, i + n ] ) {
+
+					if ( j < 0 || j >= n * n || Number.isNaN( heights[ j ] ) ) continue;
+					const t = Math.round( heights[ j ] / size );
+					if ( t < low ) low = t;
+
+				}
+
+				const depth = MathUtils.clamp( top - low + 1, 1, FINE_MAX_COLUMN );
+				depths[ i ] = depth;
+				count += depth;
+
+			}
+
+		}
+
+		const mesh = new InstancedMesh(
+			new BoxGeometry( size, size, size ),
+			new MeshLambertMaterial(),
+			count
+		);
+		mesh.frustumCulled = false;
+
+		let cursor = 0;
+		const rowsPerJob = Math.max( 1, Math.floor( 5000 / n ) );
+		for ( let start = 0; start < n; start += rowsPerJob ) {
+
+			const rows = [ start, Math.min( start + rowsPerJob, n ) ];
+			this._jobs.push( () => {
+
+				for ( let iz = rows[ 0 ]; iz < rows[ 1 ]; iz ++ ) {
+
+					for ( let ix = 0; ix < n; ix ++ ) {
+
+						const i = iz * n + ix;
+						const depth = depths[ i ];
+						if ( ! depth ) continue;
+
+						const x = x0 + ix * size;
+						const z = z0 + iz * size;
+						const cls = this.segments.classify( x, z );
+						const rgb = PALETTE[ cls ] || PALETTE.other;
+						const jit = 0.88 + hash01( ix * 92821 + iz ) * 0.2;
+
+						for ( let d = 0; d < depth; d ++ ) {
+
+							const shade = jit * ( d === 0 ? 1 : 0.86 );
+							_c.setRGB( rgb[ 0 ] / 255 * shade, rgb[ 1 ] / 255 * shade, rgb[ 2 ] / 255 * shade );
+							_m.makeTranslation( x, ( tops[ i ] - d - 0.5 ) * size, z );
+							mesh.setMatrixAt( cursor, _m );
+							mesh.setColorAt( cursor, _c );
+							cursor ++;
+
+						}
+
+					}
+
+				}
+
+				this.status = `building ${ Math.round( cursor / count * 100 ) }%`;
+
+			} );
+
+		}
+
+		this._jobs.push( () => {
+
+			mesh.count = cursor;
+			mesh.instanceMatrix.needsUpdate = true;
+			if ( mesh.instanceColor ) mesh.instanceColor.needsUpdate = true;
+
+			this._dispose();
+			this.scene.add( mesh );
+			this.mesh = mesh;
+
+			fineUniforms.uFineCenter.value.set( center.x, center.z );
+			fineUniforms.uFineRadius.value = this.radius - this.size;
+
+			this._center.copy( center );
+			this._have = true;
+			this._building = false;
+			this.status = `${ cursor.toLocaleString() } voxels @ ${ size }m`;
+
+		} );
+
+	}
+
+	_dispose() {
+
+		if ( ! this.mesh ) return;
+		this.scene.remove( this.mesh );
+		this.mesh.geometry.dispose();
+		this.mesh.material.dispose();
+		this.mesh.dispose();
+		this.mesh = null;
+
+	}
+
+}
+
+function hash01( x ) {
+
+	const s = Math.sin( x * 127.1 ) * 43758.5453;
+	return s - Math.floor( s );
 
 }
