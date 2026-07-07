@@ -86,13 +86,14 @@
       <div class="section-title">Voxel world</div>
       <label class="check-row">
         <input id="voxel" type="checkbox" />
-        <span>Voxelize the mesh</span>
+        <span>Voxel map (whole area)</span>
       </label>
       <label class="slider-row">
         <span>Voxel size</span>
-        <input id="voxel-size" type="range" min="3" max="12" step="1" value="6" />
-        <span id="voxel-size-val" class="slider-val">6</span>
+        <input id="voxel-size" type="range" min="8" max="32" step="2" value="16" />
+        <span id="voxel-size-val" class="slider-val">16</span>
       </label>
+      <div class="section-note">Size is fixed at build — changing it rebuilds the map</div>
       <div id="voxel-status" class="section-note"></div>
     </div>
 

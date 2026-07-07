@@ -66,6 +66,13 @@ export class Segmentation {
 		this.ctx = this.canvas.getContext( '2d', { willReadFrequently: true } );
 		this._pixels = null;
 
+		// parallel grayscale canvas: building heights in metres (0–250)
+		this.heightCanvas = document.createElement( 'canvas' );
+		this.heightCanvas.width = this.canvas.width;
+		this.heightCanvas.height = this.canvas.height;
+		this.hctx = this.heightCanvas.getContext( '2d', { willReadFrequently: true } );
+		this._heightPixels = null;
+
 		this.texture = new CanvasTexture( this.canvas );
 		this.texture.minFilter = LinearFilter;
 		this.texture.magFilter = LinearFilter;
@@ -95,10 +102,54 @@ export class Segmentation {
 	}
 
 	// build the coverage data without turning the visual tint on — for
-	// consumers like the voxel world that only need classify()
+	// consumers like the voxel world that only need the samplers. Returns a
+	// promise that resolves when the data is ready (check .ready for success).
 	ensureData() {
 
-		if ( ! this.ready && ! this._building ) this._build();
+		if ( ! this.ready && ! this._building ) this._buildPromise = this._build();
+		return this._buildPromise || Promise.resolve();
+
+	}
+
+	// --- UV-space samplers (u east 0→1, v north 0→1 across the play bounds) ---
+
+	classifyUV( u, v ) {
+
+		if ( ! this._pixels ) return 'other';
+
+		const px = clampPx( u * this.canvas.width, this.canvas.width );
+		const py = clampPx( ( 1 - v ) * this.canvas.height, this.canvas.height );
+		const i = ( py * this.canvas.width + px ) * 4;
+		const d = this._pixels.data;
+		if ( d[ i + 3 ] < 100 ) return 'other';
+
+		let best = 'other';
+		let bestDist = Infinity;
+		for ( const cls in CLASS_RGB ) {
+
+			const c = CLASS_RGB[ cls ];
+			const dist = ( d[ i ] - c[ 0 ] ) ** 2 + ( d[ i + 1 ] - c[ 1 ] ) ** 2 + ( d[ i + 2 ] - c[ 2 ] ) ** 2;
+			if ( dist < bestDist ) {
+
+				bestDist = dist;
+				best = cls;
+
+			}
+
+		}
+
+		return best;
+
+	}
+
+	// building height in metres at a play-bounds UV (0 where no building)
+	buildingHeightUV( u, v ) {
+
+		if ( ! this._heightPixels ) return 0;
+
+		const px = clampPx( u * this.canvas.width, this.canvas.width );
+		const py = clampPx( ( 1 - v ) * this.canvas.height, this.canvas.height );
+		return this._heightPixels.data[ ( py * this.canvas.width + px ) * 4 ];
 
 	}
 
@@ -209,6 +260,7 @@ export class Segmentation {
 			await Promise.all( Array.from( { length: CONCURRENCY }, worker ) );
 
 			this._pixels = this.ctx.getImageData( 0, 0, this.canvas.width, this.canvas.height );
+			this._heightPixels = this.hctx.getImageData( 0, 0, this.canvas.width, this.canvas.height );
 			this.texture.needsUpdate = true;
 			this.ready = true;
 			this.status = 'whole play area segmented';
@@ -251,9 +303,75 @@ export class Segmentation {
 		this._layer( vt, 'landuse', ( p ) => GRASS_LANDUSE.has( p.class ), SEGMENT_COLORS.grass );
 		this._layer( vt, 'water', () => true, SEGMENT_COLORS.water );
 		this._roadLayer( vt );
-		this._layer( vt, 'building', () => true, SEGMENT_COLORS.building );
+		this._buildingLayer( vt, left, top, right - left, bottom - top );
 
 		ctx.restore();
+
+	}
+
+	// buildings paint the class color and, on the parallel canvas, their
+	// render_height in metres as a gray level — the voxel world reads it
+	_buildingLayer( vt, clipX, clipY, clipW, clipH ) {
+
+		const layer = vt.layers.building;
+		if ( ! layer ) return;
+
+		const ctx = this.ctx;
+		const hctx = this.hctx;
+		ctx.fillStyle = SEGMENT_COLORS.building;
+		hctx.save();
+		hctx.beginPath();
+		hctx.rect( clipX, clipY, clipW, clipH );
+		hctx.clip();
+
+		for ( let i = 0; i < layer.length; i ++ ) {
+
+			const feature = layer.feature( i );
+			if ( feature.type !== 3 ) continue;
+
+			const h = Math.round( Math.min( feature.properties.render_height || 8, 250 ) );
+			const geom = feature.toGeoJSON( this._tx, this._ty, ZOOM ).geometry;
+			const polys = geom.type === 'Polygon' ? [ geom.coordinates ] : geom.coordinates;
+
+			for ( const target of [ ctx, hctx ] ) {
+
+				if ( target === hctx ) target.fillStyle = `rgb(${ h },${ h },${ h })`;
+				target.beginPath();
+
+			}
+
+			for ( const rings of polys ) {
+
+				for ( const ring of rings ) {
+
+					this._ring( ring );
+					this._ringOn( hctx, ring );
+
+				}
+
+			}
+
+			ctx.fill( 'evenodd' );
+			hctx.fill( 'evenodd' );
+
+		}
+
+		hctx.restore();
+
+	}
+
+	_ringOn( target, ring ) {
+
+		for ( let j = 0; j < ring.length; j ++ ) {
+
+			const px = this._px( ring[ j ][ 0 ] );
+			const py = this._py( ring[ j ][ 1 ] );
+			if ( j === 0 ) target.moveTo( px, py );
+			else target.lineTo( px, py );
+
+		}
+
+		target.closePath();
 
 	}
 
@@ -354,6 +472,12 @@ export class Segmentation {
 		return ( PLAY_BOUNDS.maxLat - lat ) / ( PLAY_BOUNDS.maxLat - PLAY_BOUNDS.minLat ) * this.canvas.height;
 
 	}
+
+}
+
+function clampPx( v, max ) {
+
+	return Math.min( max - 1, Math.max( 0, Math.round( v ) ) );
 
 }
 

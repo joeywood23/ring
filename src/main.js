@@ -153,8 +153,8 @@ function init( apiKey ) {
 
 		} );
 
-		// tiles streamed in while riding, aiming, or voxelizing need raycast acceleration
-		if ( groundMode() || ( targeter && targeter.active ) || ( voxels && voxels.enabled ) ) ensureBVH( tileScene );
+		// tiles streamed in while riding or aiming need raycast acceleration
+		if ( groundMode() || ( targeter && targeter.active ) ) ensureBVH( tileScene );
 
 	} );
 
@@ -267,7 +267,7 @@ function init( apiKey ) {
 	} );
 
 	segments = new Segmentation( { playArea } );
-	voxels = new VoxelWorld( { scene, tilesGroup: tiles.group, segments } );
+	voxels = new VoxelWorld( { scene, tilesGroup: tiles.group, segments, playArea } );
 
 	bindUI();
 	window.addEventListener( 'resize', onResize );
@@ -555,7 +555,6 @@ function flyToView( camPos, target ) {
 
 const _dir = new Vector3();
 const _center = new Vector3();
-const _voxFocus = new Vector3();
 
 function updateSurfaceHUD( mode ) {
 
@@ -621,8 +620,7 @@ function animate() {
 
 	if ( segments.enabled ) updateSurfaceHUD( mode );
 
-	// voxel zone follows the player, or the map view target when flying free
-	if ( voxels.enabled ) voxels.update( mode ? mode.pos : currentViewTarget( _voxFocus ) );
+	voxels.update(); // pumps any in-progress voxel build
 
 	targeter.update( dt );
 	updateProgress();
