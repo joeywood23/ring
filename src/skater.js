@@ -135,6 +135,10 @@ export class SkaterRig {
 
 			this._poseAir( T, hips );
 
+		} else if ( state.manual ) {
+
+			this._poseManual( T, hips );
+
 		} else if ( state.braking ) {
 
 			this._poseBrake( T, hips );
@@ -202,6 +206,28 @@ export class SkaterRig {
 		set( T.armLFore, - 0.5, 0, 0 );
 		set( T.armR, - 0.4, 0, 0.9 );
 		set( T.armRFore, - 0.5, 0, 0 );
+
+	}
+
+	// manual: weight balanced over the tail, front leg reaching up the nose,
+	// arms spread wide — the deck itself pitches, so the pose leans against it
+	_poseManual( T, hips ) {
+
+		hips.y = 0.66;
+		hips.z = - 0.14;
+		set( T.hips, - 0.28, - 0.85, 0 );      // pelvis tipped back over the tail
+		set( T.torso, - 0.15, 0.35, 0 );
+		set( T.head, 0.12, 0.55, 0 );          // eyes back down the road
+		set( T.legL, - 0.70, 0.75, 0 );        // front leg extends toward the nose
+		set( T.legLShin, 0.30, 0, 0 );
+		set( T.legLFoot, - 0.30, - 0.25, 0 );
+		set( T.legR, - 0.55, 0.35, 0 );        // back knee bent deep under the body
+		set( T.legRShin, 0.95, 0, 0 );
+		set( T.legRFoot, - 0.25, - 0.85, 0 );
+		set( T.armL, 0.85, 0, - 0.75 );        // arms out wide for balance
+		set( T.armLFore, - 0.15, 0, 0 );
+		set( T.armR, 0.65, 0, 0.75 );
+		set( T.armRFore, - 0.15, 0, 0 );
 
 	}
 

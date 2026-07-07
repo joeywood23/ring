@@ -49,6 +49,7 @@ export const PHYSICS = {
 	drag: 0.005,        // quadratic, sets downhill terminal velocity
 	grip: 7,            // lateral-slip damping rate — how hard the wheels carve
 	turnRate: 2.5,      // steering rate at low speed
+	manualTurn: 1.8,    // steering multiplier while manualing on the back wheels
 	jump: 5.5,          // ollie pop velocity
 	maxSpeed: 50,
 };
@@ -64,6 +65,7 @@ export const PHYSICS_CONTROLS = [
 	[ 'drag', 'Drag', 0, 0.03, 0.0005 ],
 	[ 'grip', 'Grip', 0.5, 20, 0.1 ],
 	[ 'turnRate', 'Turn', 0.5, 6, 0.05 ],
+	[ 'manualTurn', 'Manual turn', 1, 4, 0.05 ],
 	[ 'jump', 'Ollie', 0, 15, 0.1 ],
 	[ 'maxSpeed', 'Max speed', 5, 100, 1 ],
 ];
@@ -73,6 +75,8 @@ const WALL_NORMAL_Y = 0.55; // steeper than this (normal.y below) = wall, not ra
 
 // --- board / truck kinematics ------------------------------------------------
 const MAX_LEAN = 0.30;         // rad of deck roll at full carve
+const MANUAL_PITCH = 0.32;     // rad of nose-up pitch while manualing
+const REAR_AXLE_Z = 0.31;      // pivot distance for the manual pitch
 const WHEEL_R = 0.03;
 // Truck pivot axes are inclined at PIVOT_ANGLE from horizontal, pointing
 // toward the board's center (front axis tips back, rear axis tips forward).
@@ -116,6 +120,7 @@ export class SkateMode {
 		this.vel = new Vector3();
 		this.yaw = 0;
 		this.onGround = true;
+		this.manual = false;
 		this.groundNormal = new Vector3( 0, 1, 0 );
 		this.lastGroundY = 0;
 		this.spawn = new Vector3();
@@ -210,6 +215,7 @@ export class SkateMode {
 		this.board = board;
 		this.deck = deck;
 		this._lean = 0;
+		this._pitch = 0;
 		this._spin = 0;
 
 		const shadow = new Mesh(
@@ -364,11 +370,17 @@ export class SkateMode {
 		const speed = vel.length();
 		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
 
-		// steering — tighter at low speed, looser at high speed, reduced in air
+		// manual: shift pops the board onto its back wheels while rolling
+		const shift = keys.has( 'ShiftLeft' ) || keys.has( 'ShiftRight' );
+		this.manual = this.onGround && shift && speed > 0.5;
+
+		// steering — tighter at low speed, looser at high speed, reduced in air;
+		// pivoting on the rear wheels turns much tighter
 		const turn = ( keys.has( 'KeyA' ) ? 1 : 0 ) - ( keys.has( 'KeyD' ) ? 1 : 0 );
-		const turnRate = this.onGround
+		let turnRate = this.onGround
 			? PHYSICS.turnRate / ( 1 + speed / 14 )
 			: PHYSICS.turnRate * 0.8;
+		if ( this.manual ) turnRate *= PHYSICS.manualTurn;
 		this.yaw += turn * turnRate * h;
 
 		if ( this.onGround ) {
@@ -536,6 +548,13 @@ export class SkateMode {
 		this._lean += ( leanTarget - this._lean ) * ( 1 - Math.exp( - 7 * dt ) );
 		this.deck.rotation.z = this._lean;
 
+		// manual: pitch the deck nose-up, pivoting on the rear axle — the root
+		// rises so the back wheels stay planted while the front ones lift
+		const pitchTarget = this.manual ? MANUAL_PITCH : 0;
+		this._pitch += ( pitchTarget - this._pitch ) * ( 1 - Math.exp( - 10 * dt ) );
+		this.deck.rotation.x = - this._pitch;
+		this.board.position.addScaledVector( this._visUp, Math.sin( this._pitch ) * REAR_AXLE_Z );
+
 		// truck kinematics: hangers rotate about their pivot axes by the angle
 		// that keeps the axles level under the rolled deck
 		const rho = Math.atan( Math.tan( this._lean ) / COS_PIVOT );
@@ -555,6 +574,7 @@ export class SkateMode {
 		this.rig.update( dt, {
 			grounded: this.onGround,
 			speed,
+			manual: this.manual,
 			pushing: this.onGround && this.keys.has( 'KeyW' ),
 			braking: this.onGround && this.keys.has( 'KeyS' ) && speed > 0.3,
 			lean: this._lean,
@@ -624,7 +644,7 @@ export class SkateMode {
 
 		const mph = Math.round( this.vel.length() * 2.237 );
 		this.hud.speed.textContent = mph;
-		this.hud.state.textContent = this.onGround ? '' : 'AIR';
+		this.hud.state.textContent = ! this.onGround ? 'AIR' : this.manual ? 'MANUAL' : '';
 
 	}
 
