@@ -110,7 +110,7 @@ const DOWN = new Vector3( 0, - 1, 0 );
 
 export class SkateMode {
 
-	constructor( { scene, camera, tilesGroup, playArea, park, hud, onExit } ) {
+	constructor( { scene, camera, tilesGroup, playArea, park, hud, audio, onExit } ) {
 
 		this.scene = scene;
 		this.camera = camera;
@@ -145,7 +145,7 @@ export class SkateMode {
 		this._raycaster = new Raycaster();
 		this._raycaster.firstHitOnly = true;
 
-		this.audio = new SkateAudio();
+		this.audio = audio || new SkateAudio();
 
 		this._buildBoard();
 
@@ -301,13 +301,15 @@ export class SkateMode {
 		this.active = true;
 		this.audio.start();
 		this.hud.root.classList.remove( 'hidden' );
+		this.hud.hint.textContent =
+			'W push · S brake · A/D carve · Shift manual · Space ollie · 1 ramp · 2 rail · U upscale · R respawn · Esc bail';
 		if ( document.activeElement ) document.activeElement.blur();
 
 		this._updateCamera( 1, true );
 
 	}
 
-	exit() {
+	exit( silent = false ) {
 
 		if ( ! this.active ) return;
 
@@ -325,9 +327,14 @@ export class SkateMode {
 		this.scene.fog.far = this._saved.fogFar;
 
 		this.hud.root.classList.add( 'hidden' );
+		this.hud.balanceWrap.classList.add( 'hidden' );
 
-		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
-		this.onExit( this.pos.clone(), _fwd.clone() );
+		if ( ! silent ) {
+
+			_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+			this.onExit( this.pos.clone(), _fwd.clone() );
+
+		}
 
 	}
 

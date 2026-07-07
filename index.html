@@ -44,9 +44,13 @@
     </div>
 
     <div class="section">
-      <div class="section-title">Skate</div>
-      <button id="drop-in">🛹 Drop In</button>
-      <div class="section-note">Pick a spot on the map to start skating</div>
+      <div class="section-title">Drop in</div>
+      <div class="drop-grid">
+        <button id="drop-skate" class="drop-btn">🛹 Skate</button>
+        <button id="drop-walk" class="drop-btn">🚶 Walk</button>
+        <button id="drop-run" class="drop-btn">🏃 Run</button>
+      </div>
+      <div class="section-note">Pick a spot on the map to start — while active, buttons switch mode in place</div>
       <label class="check-row">
         <input id="upscale" type="checkbox" />
         <span>Upscale detail <kbd>U</kbd></span>
@@ -119,7 +123,7 @@
       <div id="balance-track"><div id="balance-dot"></div></div>
       <div class="balance-label">balance — hold it with A/D</div>
     </div>
-    <div class="hud-hint">W push · S brake · A/D carve · Shift manual · Space ollie · 1 ramp · 2 rail · U upscale · R respawn · Esc bail</div>
+    <div id="hud-hint" class="hud-hint"></div>
   </div>
 
   <div id="hint" class="hidden">left-drag move &nbsp;·&nbsp; right-drag look &nbsp;·&nbsp; scroll zoom &nbsp;·&nbsp; click map to fly</div>

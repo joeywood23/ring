@@ -24,6 +24,8 @@ import { LOCATIONS, cameraGeoForLocation } from './locations.js';
 import { Minimap } from './minimap.js';
 import { SkateMode, ensureBVH, PHYSICS, PHYSICS_CONTROLS } from './skate.js';
 import { SkatePark } from './props.js';
+import { PedestrianMode } from './walk.js';
+import { SkateAudio } from './sound.js';
 import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
@@ -42,7 +44,8 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, targeter, detail, park;
+let renderer, camera, scene, tiles, controls, minimap, skate, walker, targeter, detail, park;
+let dropMode = 'skate'; // which mode the next drop-in (or in-place switch) uses
 const playArea = new PlayArea();
 const clock = new Clock();
 
@@ -147,8 +150,8 @@ function init( apiKey ) {
 
 		} );
 
-		// tiles streamed in while skating or aiming need raycast acceleration
-		if ( ( skate && skate.active ) || ( targeter && targeter.active ) ) ensureBVH( tileScene );
+		// tiles streamed in while riding or aiming need raycast acceleration
+		if ( groundMode() || ( targeter && targeter.active ) ) ensureBVH( tileScene );
 
 	} );
 
@@ -196,20 +199,36 @@ function init( apiKey ) {
 
 	park = new SkatePark( { scene } );
 
+	const audio = new SkateAudio(); // one engine shared by every ground mode
+	const hud = {
+		root: document.getElementById( 'hud' ),
+		speed: document.getElementById( 'hud-speed' ),
+		state: document.getElementById( 'hud-state' ),
+		hint: document.getElementById( 'hud-hint' ),
+		balanceWrap: document.getElementById( 'balance-wrap' ),
+		balanceDot: document.getElementById( 'balance-dot' ),
+	};
+
 	skate = new SkateMode( {
 		scene,
 		camera,
 		playArea,
 		park,
+		audio,
+		hud,
 		tilesGroup: tiles.group,
-		hud: {
-			root: document.getElementById( 'hud' ),
-			speed: document.getElementById( 'hud-speed' ),
-			state: document.getElementById( 'hud-state' ),
-			balanceWrap: document.getElementById( 'balance-wrap' ),
-			balanceDot: document.getElementById( 'balance-dot' ),
-		},
-		onExit: onSkateExit,
+		onExit: onModeExit,
+	} );
+
+	walker = new PedestrianMode( {
+		scene,
+		camera,
+		playArea,
+		park,
+		audio,
+		hud,
+		tilesGroup: tiles.group,
+		onExit: onModeExit,
 	} );
 
 	targeter = new DropTargeter( {
@@ -220,7 +239,7 @@ function init( apiKey ) {
 		onSelect: ( point ) => {
 
 			setDropButtonState( false );
-			enterSkateAt( point );
+			enterModeAt( point );
 
 		},
 		onCancel: () => setDropButtonState( false ),
@@ -334,45 +353,96 @@ function flyToPoint( point ) {
 // Skate mode
 // ---------------------------------------------------------------------------
 
+const MODE_LABELS = { skate: '🛹 Skate', walk: '🚶 Walk', run: '🏃 Run' };
+
+// the active ground mode (skate or pedestrian), or null when flying free
+function groundMode() {
+
+	if ( skate && skate.active ) return skate;
+	if ( walker && walker.active ) return walker;
+	return null;
+
+}
+
 function setDropButtonState( targeting ) {
 
-	const btn = document.getElementById( 'drop-in' );
-	btn.classList.toggle( 'targeting', targeting );
-	btn.textContent = targeting ? '✕ Cancel — pick a spot' : '🛹 Drop In';
+	for ( const m in MODE_LABELS ) {
+
+		const btn = document.getElementById( `drop-${ m }` );
+		const on = targeting && m === dropMode;
+		btn.classList.toggle( 'targeting', on );
+		btn.textContent = on ? '✕ Cancel' : MODE_LABELS[ m ];
+
+	}
+
 	document.getElementById( 'target-hint' ).classList.toggle( 'hidden', ! targeting );
 
 }
 
-function toggleDropTargeting() {
+function onDropButton( mode ) {
 
-	if ( ! state.rootLoaded || skate.active ) return;
+	if ( ! state.rootLoaded ) return;
 
-	if ( targeter.active ) {
+	if ( groundMode() ) {
 
-		targeter.cancel(); // resets the button via onCancel
-
-	} else {
-
-		ensureBVH( tiles.group ); // one-time raycast prep for the loaded tiles
-		targeter.begin();
-		setDropButtonState( true );
+		switchMode( mode ); // already on the ground: swap in place
+		return;
 
 	}
 
+	if ( targeter.active ) {
+
+		if ( dropMode === mode ) {
+
+			targeter.cancel(); // resets the buttons via onCancel
+
+		} else {
+
+			dropMode = mode; // re-aim the pending drop at a different mode
+			setDropButtonState( true );
+
+		}
+
+		return;
+
+	}
+
+	dropMode = mode;
+	ensureBVH( tiles.group ); // one-time raycast prep for the loaded tiles
+	targeter.begin();
+	setDropButtonState( true );
+
 }
 
-function enterSkateAt( point ) {
+function enterModeAt( point ) {
 
-	if ( ! state.rootLoaded || state.flying || skate.active ) return;
+	if ( ! state.rootLoaded || state.flying || groundMode() ) return;
 
 	controls.enabled = false;
 	document.getElementById( 'hint' ).classList.add( 'hidden' );
 
 	playArea.constrain( point, null, 30 );
 	camera.getWorldDirection( _dir ); // face the way the camera was looking
-	skate.enter( point, _dir );
+	if ( dropMode === 'skate' ) skate.enter( point, _dir );
+	else walker.enter( point, _dir, dropMode );
 	detail.setActive( state.upscale );
 	updateUpscaleStatus();
+
+}
+
+// swap between skate / walk / run in place, keeping position and heading
+function switchMode( mode ) {
+
+	const cur = groundMode();
+	const curName = cur === skate ? 'skate' : walker.gaitName;
+	if ( ! cur || mode === curName ) return;
+
+	const point = cur.pos.clone();
+	_dir.set( Math.sin( cur.yaw ), 0, Math.cos( cur.yaw ) );
+	cur.exit( true ); // silent: no camera flyout, controls stay disabled
+
+	if ( mode === 'skate' ) skate.enter( point, _dir );
+	else walker.enter( point, _dir, mode );
 
 }
 
@@ -381,7 +451,7 @@ function setUpscale( on ) {
 	state.upscale = on;
 	localStorage.setItem( 'ring_upscale', on ? '1' : '0' );
 	document.getElementById( 'upscale' ).checked = on;
-	if ( skate.active ) detail.setActive( on );
+	if ( groundMode() ) detail.setActive( on );
 	updateUpscaleStatus();
 
 }
@@ -389,28 +459,29 @@ function setUpscale( on ) {
 function updateUpscaleStatus() {
 
 	const el = document.getElementById( 'upscale-status' );
-	if ( ! skate.active ) el.textContent = state.upscale ? 'active while skating' : '';
+	if ( ! groundMode() ) el.textContent = state.upscale ? 'active on the ground' : '';
 	else el.textContent = state.upscale ? detail.status : 'off';
 
 }
 
 const _spawnPt = new Vector3();
 
-// Drop a prop on the ground ahead of the skater, aligned with their heading.
+// Drop a prop on the ground ahead of the rider, aligned with their heading.
 function spawnProp( type ) {
 
-	if ( ! skate.active ) return;
+	const mode = groundMode();
+	if ( ! mode ) return;
 
 	const dist = type === 'ramp' ? 14 : 8;
-	const point = skate.groundPointAhead( dist, _spawnPt );
+	const point = mode.groundPointAhead( dist, _spawnPt );
 	if ( ! point ) return;
 
-	if ( type === 'ramp' ) park.spawnRamp( point, skate.yaw );
-	else park.spawnRail( point, skate.yaw );
+	if ( type === 'ramp' ) park.spawnRamp( point, mode.yaw );
+	else park.spawnRail( point, mode.yaw );
 
 }
 
-function onSkateExit( finalPos, forward ) {
+function onModeExit( finalPos, forward ) {
 
 	detail.setActive( false );
 	updateUpscaleStatus();
@@ -425,7 +496,7 @@ function onSkateExit( finalPos, forward ) {
 
 function flyToView( camPos, target ) {
 
-	if ( state.flying || skate.active ) return;
+	if ( state.flying || groundMode() ) return;
 
 	const startPos = camera.position.clone();
 	const startTarget = currentViewTarget( new Vector3() );
@@ -487,10 +558,11 @@ function animate() {
 	const dt = Math.min( clock.getDelta(), 0.1 );
 	distortionUniforms.uTime.value += dt * state.timeSpeed;
 
-	if ( skate.active ) {
+	const mode = groundMode();
+	if ( mode ) {
 
-		skate.update( dt );
-		if ( state.upscale ) detail.update( skate.pos );
+		mode.update( dt );
+		if ( state.upscale ) detail.update( mode.pos );
 
 	} else if ( controls.enabled ) {
 
@@ -505,7 +577,7 @@ function animate() {
 	if ( ! state.flying ) updateDistortionCenter();
 
 	// mute the photogrammetry inside the active upscale zone
-	if ( skate.active && state.upscale && detail.hasZone ) {
+	if ( mode && state.upscale && detail.hasZone ) {
 
 		distortionUniforms.uZoneCenter.value.copy( detail.zoneCenter );
 		distortionUniforms.uZoneRadius.value = detail.zoneRadius;
@@ -613,14 +685,23 @@ function buildPhysicsControls() {
 
 function bindUI() {
 
-	document.getElementById( 'drop-in' ).addEventListener( 'click', toggleDropTargeting );
+	for ( const m of [ 'skate', 'walk', 'run' ] ) {
+
+		document.getElementById( `drop-${ m }` ).addEventListener( 'click', ( e ) => {
+
+			onDropButton( m );
+			e.target.blur();
+
+		} );
+
+	}
 
 	const upscaleBox = document.getElementById( 'upscale' );
 	upscaleBox.checked = state.upscale;
 	upscaleBox.addEventListener( 'change', ( e ) => setUpscale( e.target.checked ) );
 	window.addEventListener( 'keydown', ( e ) => {
 
-		if ( ! skate.active || ( e.target && e.target.tagName === 'INPUT' ) ) return;
+		if ( ! groundMode() || ( e.target && e.target.tagName === 'INPUT' ) ) return;
 
 		if ( e.code === 'KeyU' ) setUpscale( ! state.upscale );
 		if ( e.code === 'Digit1' ) spawnProp( 'ramp' );

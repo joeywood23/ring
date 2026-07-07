@@ -169,6 +169,29 @@ export class SkateAudio {
 
 	}
 
+	// single footstep for the pedestrian modes; harder when running
+	step( hard ) {
+
+		if ( ! this.running ) return;
+
+		const t = this.ctx.currentTime;
+		const src = this.ctx.createBufferSource();
+		src.buffer = this.noise;
+		src.playbackRate.value = 0.6 + Math.random() * 0.3;
+
+		const filter = this._filter( 'lowpass', hard ? 700 : 480, 0.7 );
+		const gain = this.ctx.createGain();
+		gain.gain.setValueAtTime( hard ? 0.3 : 0.16, t );
+		gain.gain.exponentialRampToValueAtTime( 0.001, t + ( hard ? 0.09 : 0.07 ) );
+
+		src.connect( filter );
+		filter.connect( gain );
+		gain.connect( this.master );
+		src.start( t );
+		src.stop( t + 0.1 );
+
+	}
+
 	// metallic clank when the trucks lock onto a rail
 	grindStart() {
 

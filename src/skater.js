@@ -311,6 +311,156 @@ export class SkaterRig {
 
 }
 
+// Pedestrian rig: same joint skeleton, but facing +Z (travel direction) with a
+// procedural gait cycle. update() returns true on each footstrike so the
+// caller can play a step sound.
+export class WalkerRig {
+
+	constructor() {
+
+		this.group = new Group();
+		this._joints = {};
+		this._targets = {};
+		this._hipsTarget = { y: 0.78, z: 0 };
+		this._phase = 0;
+		this._idleT = 0;
+		this._build();
+
+	}
+
+	_joint( parent, name, x, y, z ) {
+
+		const g = new Group();
+		g.position.set( x, y, z );
+		parent.add( g );
+		this._joints[ name ] = g;
+		this._targets[ name ] = { x: 0, y: 0, z: 0 };
+		return g;
+
+	}
+
+	_build() {
+
+		const hips = this._joint( this.group, 'hips', 0, 0.78, 0 );
+		box( hips, PANTS, 0.26, 0.15, 0.15, 0, 0.02, 0 );
+
+		const torso = this._joint( hips, 'torso', 0, 0.10, 0 );
+		box( torso, SHIRT, 0.30, 0.40, 0.17, 0, 0.21, 0 );
+
+		const head = this._joint( torso, 'head', 0, 0.44, 0 );
+		const skull = new Mesh( new SphereGeometry( 0.095, 12, 10 ), SKIN );
+		skull.position.y = 0.1;
+		head.add( skull );
+		box( head, HAIR, 0.16, 0.08, 0.17, 0, 0.16, - 0.01 );
+
+		for ( const [ name, sx ] of [ [ 'armL', - 0.19 ], [ 'armR', 0.19 ] ] ) {
+
+			const upper = this._joint( torso, name, sx, 0.37, 0 );
+			box( upper, SHIRT, 0.09, 0.30, 0.09, 0, - 0.13, 0 );
+			const fore = this._joint( upper, name + 'Fore', 0, - 0.28, 0 );
+			box( fore, SKIN, 0.075, 0.26, 0.075, 0, - 0.12, 0 );
+
+		}
+
+		for ( const [ name, sx ] of [ [ 'legL', - 0.09 ], [ 'legR', 0.09 ] ] ) {
+
+			const thigh = this._joint( hips, name, sx, - 0.05, 0 );
+			box( thigh, PANTS, 0.115, 0.40, 0.12, 0, - 0.19, 0 );
+			const shin = this._joint( thigh, name + 'Shin', 0, - 0.40, 0 );
+			box( shin, PANTS, 0.10, 0.36, 0.10, 0, - 0.17, 0 );
+			const foot = this._joint( shin, name + 'Foot', 0, - 0.36, 0 );
+			box( foot, SHOE, 0.10, 0.06, 0.26, 0, - 0.03, 0.05 );
+
+		}
+
+	}
+
+	update( dt, state ) {
+
+		const T = this._targets;
+		const hips = this._hipsTarget;
+		let footstrike = false;
+
+		for ( const name in T ) set( T[ name ], 0, 0, 0 );
+		hips.y = 0.78;
+		hips.z = 0;
+
+		if ( ! state.grounded ) {
+
+			// airborne: legs tucked, arms raised for balance
+			hips.y = 0.74;
+			set( T.torso, 0.12, 0, 0 );
+			set( T.legL, - 0.55, 0, 0 );
+			set( T.legLShin, 0.95, 0, 0 );
+			set( T.legR, - 0.35, 0, 0 );
+			set( T.legRShin, 0.75, 0, 0 );
+			set( T.armL, - 0.35, 0, - 0.55 );
+			set( T.armR, - 0.35, 0, 0.55 );
+
+		} else if ( state.speed > 0.2 ) {
+
+			// gait cycle: phase advances with distance so cadence tracks speed
+			const stride = state.running ? 1.6 : 0.9; // metres per full cycle
+			const prev = this._phase;
+			this._phase += ( state.speed / stride ) * dt * Math.PI * 2;
+			if ( Math.floor( prev / Math.PI ) !== Math.floor( this._phase / Math.PI ) ) footstrike = true;
+
+			const ph = this._phase;
+			const A = state.running ? 0.80 : 0.45; // thigh swing amplitude
+			const swingL = Math.sin( ph );
+			const swingR = Math.sin( ph + Math.PI );
+
+			set( T.legL, swingL * A, 0, 0 );
+			set( T.legR, swingR * A, 0, 0 );
+			// knee folds while its leg swings through recovery
+			set( T.legLShin, Math.max( 0, - Math.cos( ph ) ) * ( state.running ? 1.3 : 0.6 ) + 0.1, 0, 0 );
+			set( T.legRShin, Math.max( 0, Math.cos( ph ) ) * ( state.running ? 1.3 : 0.6 ) + 0.1, 0, 0 );
+
+			// arms counter-swing, elbows bent when running
+			const armA = A * ( state.running ? 0.9 : 0.6 );
+			set( T.armL, swingR * armA, 0, - 0.12 );
+			set( T.armR, swingL * armA, 0, 0.12 );
+			const elbow = state.running ? - 1.1 : - 0.25;
+			set( T.armLFore, elbow, 0, 0 );
+			set( T.armRFore, elbow, 0, 0 );
+
+			// forward lean and vertical bob, both bigger at a run
+			set( T.torso, state.running ? 0.28 : 0.07, 0, 0 );
+			set( T.head, state.running ? - 0.18 : - 0.04, 0, 0 );
+			hips.y -= ( state.running ? 0.055 : 0.025 ) * ( 0.5 - 0.5 * Math.cos( 2 * ph ) );
+
+		} else {
+
+			// idle: subtle breathing sway
+			this._phase = 0;
+			this._idleT += dt;
+			set( T.torso, 0.03 + Math.sin( this._idleT * 1.8 ) * 0.015, 0, 0 );
+			set( T.armL, 0.04, 0, - 0.06 );
+			set( T.armR, 0.04, 0, 0.06 );
+
+		}
+
+		const k = 1 - Math.exp( - DAMP_RATE * dt );
+		for ( const name in this._joints ) {
+
+			const j = this._joints[ name ];
+			const t = T[ name ];
+			j.rotation.x += ( t.x - j.rotation.x ) * k;
+			j.rotation.y += ( t.y - j.rotation.y ) * k;
+			j.rotation.z += ( t.z - j.rotation.z ) * k;
+
+		}
+
+		const hipJoint = this._joints.hips;
+		hipJoint.position.y += ( hips.y - hipJoint.position.y ) * k;
+		hipJoint.position.z += ( hips.z - hipJoint.position.z ) * k;
+
+		return footstrike;
+
+	}
+
+}
+
 function set( t, x, y, z ) {
 
 	t.x = x;

@@ -225,10 +225,11 @@ canvas { display: block; }
 }
 
 /* ---- skate ---- */
-#drop-in {
-  width: 100%;
-  padding: 8px 10px;
-  font-size: 13px;
+.drop-grid { display: flex; gap: 5px; }
+.drop-btn {
+  flex: 1;
+  padding: 8px 4px;
+  font-size: 12px;
   font-weight: 600;
   border-radius: 7px;
   border: none;
@@ -236,9 +237,9 @@ canvas { display: block; }
   color: #fff;
   cursor: pointer;
 }
-#drop-in:hover { filter: brightness(1.15); }
+.drop-btn:hover { filter: brightness(1.15); }
 
-#drop-in.targeting {
+.drop-btn.targeting {
   background: linear-gradient(90deg, #e65100, #f9a825);
 }
 
