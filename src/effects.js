@@ -1,0 +1,217 @@
+import { Vector3 } from 'three';
+
+// Shared uniform objects — every patched tile material references these same
+// instances, so updating them once per frame drives all shaders.
+export const distortionUniforms = {
+	uTime: { value: 0 },
+	uEffect: { value: 0 },
+	uStrength: { value: 0.5 },
+	uRadius: { value: 3000 },
+	uCenter: { value: new Vector3() },
+	uColorMode: { value: 0 },
+	// upscale zone: photogrammetry is muted inside so overlay models pop
+	uZoneCenter: { value: new Vector3() },
+	uZoneRadius: { value: 0 },
+};
+
+export const EFFECTS = [
+	{ id: 0, name: 'None' },
+	{ id: 1, name: 'Wave' },
+	{ id: 2, name: 'Twist' },
+	{ id: 3, name: 'Melt' },
+	{ id: 4, name: 'Fold' },
+	{ id: 5, name: 'Stretch' },
+	{ id: 6, name: 'Glitch' },
+];
+
+export const COLOR_MODES = [
+	{ id: 0, name: 'Natural' },
+	{ id: 1, name: 'Acid' },
+	{ id: 2, name: 'Matrix' },
+	{ id: 3, name: 'Invert' },
+	{ id: 4, name: 'Noir' },
+];
+
+// Distortion happens in world space (Y = up in the reoriented Bay Area frame),
+// so we replace the projection chunk rather than displacing in object space —
+// every tile mesh carries its own model transform.
+const VERTEX_DECLARATIONS = /* glsl */ `
+uniform float uTime;
+uniform int uEffect;
+uniform float uStrength;
+uniform float uRadius;
+uniform vec3 uCenter;
+varying vec3 vRingWorld;
+
+float ringHash( vec2 p ) {
+
+	return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 );
+
+}
+
+float ringNoise( vec2 p ) {
+
+	vec2 i = floor( p );
+	vec2 f = fract( p );
+	vec2 u = f * f * ( 3.0 - 2.0 * f );
+	return mix(
+		mix( ringHash( i ), ringHash( i + vec2( 1.0, 0.0 ) ), u.x ),
+		mix( ringHash( i + vec2( 0.0, 1.0 ) ), ringHash( i + vec2( 1.0, 1.0 ) ), u.x ),
+		u.y
+	);
+
+}
+
+vec3 ringDistort( vec3 p ) {
+
+	if ( uEffect == 0 || uStrength <= 0.0 ) return p;
+
+	vec3 d = p - uCenter;
+	float r = length( d.xz );
+	float fall = exp( - r / uRadius );
+	float s = uStrength;
+
+	if ( uEffect == 1 ) {
+
+		// concentric waves rippling out from the focus point
+		p.y += sin( r * ( 14.0 / uRadius ) - uTime * 2.0 ) * uRadius * 0.04 * s * fall;
+
+	} else if ( uEffect == 2 ) {
+
+		// vortex twist around the focus point
+		float ang = 6.2831 * s * fall * ( 0.3 + 0.12 * sin( uTime * 0.5 ) );
+		float c = cos( ang );
+		float sn = sin( ang );
+		p.xz = uCenter.xz + mat2( c, - sn, sn, c ) * d.xz;
+
+	} else if ( uEffect == 3 ) {
+
+		// buildings slump and smear like softening wax
+		float n = ringNoise( p.xz * ( 3.0 / uRadius ) + uTime * 0.15 );
+		p.y = mix( p.y, p.y * ( 0.2 + 0.5 * n ), s * fall );
+		p.xz += d.xz * 0.25 * s * fall * ( n - 0.5 );
+
+	} else if ( uEffect == 4 ) {
+
+		// the city folds upward with distance, Inception-style
+		float rc = min( r, uRadius * 4.0 );
+		p.y += rc * rc * ( 0.4 * s / uRadius );
+
+	} else if ( uEffect == 5 ) {
+
+		// vertical exaggeration — hills and towers stretch skyward
+		p.y = uCenter.y + ( p.y - uCenter.y ) * ( 1.0 + 5.0 * s * fall );
+
+	} else if ( uEffect == 6 ) {
+
+		// voxel-style glitch displacement of city blocks
+		float cell = uRadius * 0.06;
+		vec2 id = floor( p.xz / cell );
+		float pick = ringHash( id + floor( uTime * 2.0 ) * 0.013 );
+		if ( pick > 0.6 ) {
+
+			vec3 off = vec3(
+				ringHash( id + 0.17 ) - 0.5,
+				( ringHash( id + 0.29 ) - 0.5 ) * 0.7,
+				ringHash( id + 0.41 ) - 0.5
+			);
+			p += off * cell * 1.2 * s * fall;
+
+		}
+
+	}
+
+	return p;
+
+}
+`;
+
+const VERTEX_PROJECT = /* glsl */ `
+vec4 ringWorldPos = modelMatrix * vec4( transformed, 1.0 );
+ringWorldPos.xyz = ringDistort( ringWorldPos.xyz );
+vRingWorld = ringWorldPos.xyz;
+vec4 mvPosition = viewMatrix * ringWorldPos;
+gl_Position = projectionMatrix * mvPosition;
+`;
+
+const FRAGMENT_DECLARATIONS = /* glsl */ `
+uniform float uTime;
+uniform int uColorMode;
+uniform vec3 uZoneCenter;
+uniform float uZoneRadius;
+varying vec3 vRingWorld;
+
+// mute the raw photogrammetry inside the upscale zone (blueprint base coat)
+vec3 ringZone( vec3 col ) {
+
+	if ( uZoneRadius <= 0.0 ) return col;
+	float d = length( vRingWorld.xz - uZoneCenter.xz );
+	float f = 1.0 - smoothstep( uZoneRadius * 0.8, uZoneRadius, d );
+	float l = dot( col, vec3( 0.299, 0.587, 0.114 ) );
+	vec3 muted = vec3( l * 0.45 ) + vec3( 0.03, 0.05, 0.08 );
+	return mix( col, muted, f * 0.85 );
+
+}
+
+vec3 ringHueShift( vec3 col, float a ) {
+
+	const vec3 k = vec3( 0.57735 );
+	float c = cos( a );
+	float s = sin( a );
+	return col * c + cross( k, col ) * s + k * dot( k, col ) * ( 1.0 - c );
+
+}
+
+vec3 ringColor( vec3 col ) {
+
+	if ( uColorMode == 1 ) {
+
+		// hue sweeps with altitude and time
+		return ringHueShift( col * 1.15, vRingWorld.y * 0.012 + uTime * 0.6 );
+
+	} else if ( uColorMode == 2 ) {
+
+		float l = dot( col, vec3( 0.299, 0.587, 0.114 ) );
+		return vec3( 0.05 * l, 1.35 * l, 0.25 * l );
+
+	} else if ( uColorMode == 3 ) {
+
+		return 1.0 - col;
+
+	} else if ( uColorMode == 4 ) {
+
+		float l = dot( col, vec3( 0.299, 0.587, 0.114 ) );
+		return vec3( pow( l, 1.5 ) * 1.1 );
+
+	}
+
+	return col;
+
+}
+`;
+
+export function patchMaterial( material ) {
+
+	if ( material.userData.ringPatched ) return;
+	material.userData.ringPatched = true;
+
+	material.onBeforeCompile = ( shader ) => {
+
+		Object.assign( shader.uniforms, distortionUniforms );
+
+		shader.vertexShader = VERTEX_DECLARATIONS + shader.vertexShader
+			.replace( '#include <project_vertex>', VERTEX_PROJECT );
+
+		shader.fragmentShader = FRAGMENT_DECLARATIONS + shader.fragmentShader
+			.replace(
+				'#include <opaque_fragment>',
+				'#include <opaque_fragment>\n\tgl_FragColor.rgb = ringZone( ringColor( gl_FragColor.rgb ) );'
+			);
+
+	};
+
+	// Constant suffix lets three.js share one compiled program across all tiles.
+	material.customProgramCacheKey = () => 'ring-distort-2';
+	material.needsUpdate = true;
+
+}

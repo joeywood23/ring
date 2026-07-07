@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ring — SF Bay in 3D</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="progress"></div>
+
+  <!-- API key modal -->
+  <div id="key-modal" class="hidden">
+    <div class="modal-card">
+      <h1>Ring</h1>
+      <p class="subtitle">Photorealistic 3D exploration of the San Francisco Bay Area</p>
+      <p>This app streams <strong>Google Photorealistic 3D Tiles</strong>, which requires a free
+        Google Maps Platform API key:</p>
+      <ol>
+        <li>Go to <a href="https://console.cloud.google.com/google/maps-apis" target="_blank" rel="noreferrer">Google Cloud Console → Maps Platform</a> and create/select a project</li>
+        <li>Enable the <strong>Map Tiles API</strong></li>
+        <li>Create an API key under <strong>Keys &amp; Credentials</strong></li>
+      </ol>
+      <p class="note">The key is stored only in your browser (localStorage) and sent only to Google.</p>
+      <div class="key-row">
+        <input id="key-input" type="text" placeholder="Paste your API key…" spellcheck="false" autocomplete="off" />
+        <button id="key-save">Launch</button>
+      </div>
+      <p id="key-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <!-- Control panel -->
+  <div id="panel" class="hidden">
+    <div class="panel-header">
+      <span class="brand">RING</span>
+      <span class="brand-sub">SF BAY</span>
+      <button id="change-key" title="Change API key">⚙</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Fly to</div>
+      <div id="locations" class="btn-grid"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Skate</div>
+      <button id="drop-in">🛹 Drop In</button>
+      <div class="section-note">Pick a spot on the map to start skating</div>
+      <label class="check-row">
+        <input id="upscale" type="checkbox" />
+        <span>Upscale detail <kbd>U</kbd></span>
+      </label>
+      <div id="upscale-status" class="section-note"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Distort</div>
+      <div id="effects" class="btn-grid"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Color</div>
+      <div id="colors" class="btn-grid"></div>
+    </div>
+
+    <div class="section">
+      <label class="slider-row">
+        <span>Strength</span>
+        <input id="strength" type="range" min="0" max="1" step="0.01" value="0.5" />
+      </label>
+      <label class="slider-row">
+        <span>Reach</span>
+        <input id="radius" type="range" min="500" max="12000" step="100" value="3000" />
+      </label>
+      <label class="slider-row">
+        <span>Speed</span>
+        <input id="speed" type="range" min="0" max="3" step="0.05" value="1" />
+      </label>
+      <label class="check-row">
+        <input id="wireframe" type="checkbox" />
+        <span>Wireframe</span>
+      </label>
+    </div>
+  </div>
+
+  <div id="minimap" class="hidden" title="Click anywhere to fly there">
+    <svg id="minimap-marker" viewBox="0 0 24 24" width="22" height="22">
+      <path d="M12 2 L19.5 21 L12 16 L4.5 21 Z" fill="#4fc3f7" stroke="#0b0e14" stroke-width="1.5" stroke-linejoin="round" />
+    </svg>
+    <span class="minimap-label">SF BAY</span>
+  </div>
+
+  <div id="target-hint" class="hidden">click a spot to drop in &nbsp;·&nbsp; drag to look around &nbsp;·&nbsp; Esc to cancel</div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-speed-row">
+      <span id="hud-speed">0</span>
+      <span class="hud-unit">mph</span>
+      <span id="hud-state"></span>
+    </div>
+    <div class="hud-hint">W push · S brake · A/D carve · Space ollie · U upscale · R respawn · Esc bail</div>
+  </div>
+
+  <div id="hint" class="hidden">left-drag move &nbsp;·&nbsp; right-drag look &nbsp;·&nbsp; scroll zoom &nbsp;·&nbsp; click map to fly</div>
+  <div id="attributions"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

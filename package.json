@@ -1,0 +1,19 @@
+{
+  "name": "ring",
+  "version": "1.0.0",
+  "description": "Explore and distort photorealistic 3D maps of the San Francisco Bay Area",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "3d-tiles-renderer": "^0.4.28",
+    "three": "^0.185.1",
+    "three-mesh-bvh": "^0.9.10"
+  },
+  "devDependencies": {
+    "vite": "^8.1.3"
+  }
+}
