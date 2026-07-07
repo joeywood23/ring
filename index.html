@@ -68,6 +68,21 @@
     </div>
 
     <div class="section">
+      <div class="section-title">Segments</div>
+      <label class="check-row">
+        <input id="segment" type="checkbox" />
+        <span>Show segmentation</span>
+      </label>
+      <div class="seg-legend">
+        <span class="seg-chip" style="--c:#ff6f61">building</span>
+        <span class="seg-chip" style="--c:#8b7cf6">road</span>
+        <span class="seg-chip" style="--c:#4ecb5f">grass</span>
+        <span class="seg-chip" style="--c:#3aa5ff">water</span>
+      </div>
+      <div id="segment-status" class="section-note"></div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Skate physics</div>
       <div id="physics-controls"></div>
       <button id="physics-reset">Reset defaults</button>
@@ -117,6 +132,7 @@
       <span id="hud-speed">0</span>
       <span class="hud-unit">mph</span>
       <span id="hud-state"></span>
+      <span id="hud-surface"></span>
     </div>
     <div id="balance-wrap" class="hidden">
       <div id="balance-track"><div id="balance-dot"></div></div>

@@ -161,6 +161,39 @@ canvas { display: block; }
 }
 .slider-row span { width: 62px; flex-shrink: 0; }
 .slider-row input[type="range"] { flex: 1; accent-color: #7c4dff; }
+.seg-legend {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+  font-size: 10.5px;
+  color: #cdd3e0;
+}
+.seg-chip::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 4px;
+  background: var(--c);
+  vertical-align: -1px;
+}
+
+#hud-surface {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+}
+#hud-surface:empty { display: none; }
+#hud-surface[data-cls="building"] { color: #ff6f61; }
+#hud-surface[data-cls="road"] { color: #8b7cf6; }
+#hud-surface[data-cls="grass"] { color: #4ecb5f; }
+#hud-surface[data-cls="water"] { color: #3aa5ff; }
+
 #balance-wrap { margin-bottom: 8px; }
 #balance-track {
   position: relative;

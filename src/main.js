@@ -30,6 +30,7 @@ import { SkateAudio } from './sound.js';
 import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
+import { Segmentation } from './segment.js';
 
 const KEY_STORAGE = 'ring_google_tiles_key';
 // Referrer-restricted public key; a key saved via the modal takes precedence.
@@ -45,7 +46,7 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park;
+let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park, segments;
 let dropAs = 'skate'; // which mode the pending drop-in enters
 const playArea = new PlayArea();
 const clock = new Clock();
@@ -151,8 +152,8 @@ function init( apiKey ) {
 
 		} );
 
-		// tiles streamed in while riding or aiming need raycast acceleration
-		if ( groundMode() || ( targeter && targeter.active ) ) ensureBVH( tileScene );
+		// tiles streamed in while riding, aiming, or segmenting need raycast acceleration
+		if ( groundMode() || ( targeter && targeter.active ) || ( segments && segments.enabled ) ) ensureBVH( tileScene );
 
 	} );
 
@@ -258,6 +259,13 @@ function init( apiKey ) {
 	} );
 
 	detail = new DetailOverlay( {
+		scene,
+		tilesGroup: tiles.group,
+		latLonToLocal,
+		localToLatLon,
+	} );
+
+	segments = new Segmentation( {
 		scene,
 		tilesGroup: tiles.group,
 		latLonToLocal,
@@ -550,6 +558,23 @@ function flyToView( camPos, target ) {
 
 const _dir = new Vector3();
 const _center = new Vector3();
+const _segFocus = new Vector3();
+
+function updateSurfaceHUD( mode ) {
+
+	const el = document.getElementById( 'hud-surface' );
+	if ( ! mode ) {
+
+		el.textContent = '';
+		return;
+
+	}
+
+	const cls = segments.classify( mode.pos.x, mode.pos.z, mode.lastGroundY );
+	el.textContent = cls === 'other' ? '' : cls;
+	el.dataset.cls = cls;
+
+}
 
 function updateDistortionCenter() {
 
@@ -594,6 +619,14 @@ function animate() {
 	} else {
 
 		distortionUniforms.uZoneRadius.value = 0;
+
+	}
+
+	// segmentation follows the player, or the map view target when flying free
+	if ( segments.enabled ) {
+
+		segments.update( mode ? mode.pos : currentViewTarget( _segFocus ) );
+		updateSurfaceHUD( mode );
 
 	}
 
@@ -736,6 +769,21 @@ function bindUI() {
 	updateUpscaleStatus();
 	setInterval( updateUpscaleStatus, 1000 );
 
+	const segBox = document.getElementById( 'segment' );
+	segBox.addEventListener( 'change', ( e ) => {
+
+		if ( e.target.checked ) ensureBVH( tiles.group ); // grid raycasts need it
+		segments.setActive( e.target.checked );
+		if ( ! e.target.checked ) document.getElementById( 'hud-surface' ).textContent = '';
+
+	} );
+	setInterval( () => {
+
+		document.getElementById( 'segment-status' ).textContent =
+			segments.enabled ? segments.status : '';
+
+	}, 1000 );
+
 	buildPhysicsControls();
 
 	buildButtonGroup( 'locations', LOCATIONS, ( loc ) => flyTo( loc ) );
@@ -803,7 +851,11 @@ function updateAttributions() {
 
 	if ( ! tiles || ! tiles.getAttributions ) return;
 	const parts = tiles.getAttributions( [] ).map( ( a ) => a.value );
-	if ( detail && detail.enabled ) parts.push( detail.attribution );
+	if ( ( detail && detail.enabled ) || ( segments && segments.enabled ) ) {
+
+		parts.push( 'Map data © OpenStreetMap contributors' );
+
+	}
 	document.getElementById( 'attributions' ).textContent = parts.join( ' · ' );
 
 }
