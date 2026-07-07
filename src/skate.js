@@ -43,11 +43,11 @@ const GRAV_AIR = 15;       // heavier air gravity for snappy, game-like ollies
 const PUSH_ACCEL = 7;      // W
 const MAX_PUSH_SPEED = 14; // pushing can't exceed this; hills can
 const BRAKE = 9;           // S
-const ROLL_FRICTION = 0.12;
+const ROLL_FRICTION = 0.05;
 const DRAG = 0.005;        // quadratic, sets downhill terminal velocity
 const GRIP = 7;            // lateral-slip damping rate — how hard the wheels carve
 const JUMP_SPEED = 5.5;
-const MAX_SPEED = 45;
+const MAX_SPEED = 50;
 
 // Live-tunable multipliers — the panel sliders write these while skating.
 export const PHYSICS = {
