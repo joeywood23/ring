@@ -164,8 +164,7 @@ function init( apiKey ) {
 
 		state.rootLoaded = true;
 		keyModal.classList.add( 'hidden' );
-		document.getElementById( 'panel' ).classList.remove( 'hidden' );
-		document.getElementById( 'hint' ).classList.remove( 'hidden' );
+		document.getElementById( 'drop-bar' ).classList.remove( 'hidden' );
 		jumpTo( LOCATIONS[ 0 ] );
 		playArea.configure( latLonToLocal );
 		minimap.configureExtent( playArea );
@@ -444,7 +443,7 @@ function enterModeAt( point ) {
 	if ( ! state.rootLoaded || state.flying || groundMode() ) return;
 
 	controls.enabled = false;
-	document.getElementById( 'hint' ).classList.add( 'hidden' );
+	document.getElementById( 'drop-bar' ).classList.add( 'hidden' );
 
 	playArea.constrain( point, null, 30 );
 	camera.getWorldDirection( _dir ); // face the way the camera was looking
@@ -513,7 +512,7 @@ function onModeExit( finalPos, forward ) {
 	detail.setActive( false );
 	updateUpscaleStatus();
 	controls.enabled = true;
-	document.getElementById( 'hint' ).classList.remove( 'hidden' );
+	document.getElementById( 'drop-bar' ).classList.remove( 'hidden' );
 
 	camera.position.copy( finalPos ).addScaledVector( forward, - 320 ).add( new Vector3( 0, 260, 0 ) );
 	state.lookTarget.copy( finalPos );
@@ -643,8 +642,7 @@ function animate() {
 	updateProgress();
 	renderer.render( scene, camera );
 
-	minimap.update( camera );
-	minimap.render();
+	// minimap is hidden with the rest of the UI — skip its render work
 
 }
 

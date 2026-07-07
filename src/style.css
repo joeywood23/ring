@@ -258,17 +258,32 @@ canvas { display: block; }
 }
 
 /* ---- skate ---- */
-.drop-grid { display: flex; gap: 5px; }
+/* minimal UI: the control panel, minimap, and map hint stay hidden */
+#panel { display: none !important; }
+#minimap { display: none !important; }
+#hint { display: none !important; }
+
+#drop-bar {
+  position: fixed;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  z-index: 30;
+}
+#drop-bar.hidden { display: none; }
+
 .drop-btn {
-  width: 100%;
-  padding: 8px 6px;
-  font-size: 12.5px;
+  padding: 12px 26px;
+  font-size: 15px;
   font-weight: 600;
-  border-radius: 7px;
-  border: none;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: linear-gradient(90deg, #00b8a9, #2196f3);
   color: #fff;
   cursor: pointer;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
 }
 .drop-btn:hover { filter: brightness(1.15); }
 
