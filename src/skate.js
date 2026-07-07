@@ -40,14 +40,20 @@ export function ensureBVH( object ) {
 // --- physics tuning (metres, seconds) --------------------------------------
 const GRAV_SLOPE = 9.8;    // gravity projected along the ground plane
 const GRAV_AIR = 15;       // heavier air gravity for snappy, game-like ollies
-const PUSH_ACCEL = 5.5;    // W
-const MAX_PUSH_SPEED = 12; // pushing can't exceed this; hills can
+const PUSH_ACCEL = 7;      // W
+const MAX_PUSH_SPEED = 14; // pushing can't exceed this; hills can
 const BRAKE = 9;           // S
-const ROLL_FRICTION = 0.35;
-const DRAG = 0.012;        // quadratic, sets downhill terminal velocity
+const ROLL_FRICTION = 0.12;
+const DRAG = 0.005;        // quadratic, sets downhill terminal velocity
 const GRIP = 7;            // lateral-slip damping rate — how hard the wheels carve
 const JUMP_SPEED = 5.5;
-const MAX_SPEED = 32;
+const MAX_SPEED = 45;
+
+// Live-tunable multipliers — the panel sliders write these while skating.
+export const PHYSICS = {
+	gravity: 1,  // scales slope pull and air gravity
+	friction: 1, // scales rolling resistance + aero drag
+};
 const STEP_UP = 0.5;       // curbs and small ledges roll over
 const SNAP_DOWN = 1.2;     // stay glued to ground over bumps below this drop
 const WALL_NORMAL_Y = 0.55; // steeper than this (normal.y below) = wall, not ramp
@@ -365,7 +371,7 @@ export class SkateMode {
 
 		} else {
 
-			vel.y -= GRAV_AIR * h;
+			vel.y -= GRAV_AIR * PHYSICS.gravity * h;
 
 		}
 
@@ -454,7 +460,7 @@ export class SkateMode {
 
 		// gravity projected onto the ground plane — hills accelerate you
 		_acc.copy( DOWN ).addScaledVector( n, n.y );
-		vel.addScaledVector( _acc, GRAV_SLOPE * h );
+		vel.addScaledVector( _acc, GRAV_SLOPE * PHYSICS.gravity * h );
 
 		// board forward projected onto the ground plane
 		_bf.copy( fwd ).addScaledVector( n, - fwd.dot( n ) ).normalize();
@@ -481,7 +487,7 @@ export class SkateMode {
 		const sp = vel.length();
 		if ( sp > 0.001 ) {
 
-			const decel = ( ROLL_FRICTION + DRAG * sp * sp ) * h;
+			const decel = ( ROLL_FRICTION + DRAG * sp * sp ) * PHYSICS.friction * h;
 			vel.multiplyScalar( Math.max( 0, 1 - decel / sp ) );
 
 		}

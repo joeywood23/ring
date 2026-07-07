@@ -22,7 +22,7 @@ import {
 import { distortionUniforms, patchMaterial, EFFECTS, COLOR_MODES } from './effects.js';
 import { LOCATIONS, cameraGeoForLocation } from './locations.js';
 import { Minimap } from './minimap.js';
-import { SkateMode, ensureBVH } from './skate.js';
+import { SkateMode, ensureBVH, PHYSICS } from './skate.js';
 import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
 import { DetailOverlay } from './detail.js';
@@ -549,6 +549,19 @@ function bindUI() {
 	} );
 	updateUpscaleStatus();
 	setInterval( updateUpscaleStatus, 1000 );
+
+	// physics sliders blur on release so WASD isn't swallowed by the input
+	for ( const id of [ 'gravity', 'friction' ] ) {
+
+		const slider = document.getElementById( id );
+		slider.addEventListener( 'input', ( e ) => {
+
+			PHYSICS[ id ] = parseFloat( e.target.value );
+
+		} );
+		slider.addEventListener( 'change', ( e ) => e.target.blur() );
+
+	}
 
 	buildButtonGroup( 'locations', LOCATIONS, ( loc ) => flyTo( loc ) );
 	buildButtonGroup( 'effects', EFFECTS, ( fx ) => {
