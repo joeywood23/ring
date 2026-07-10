@@ -25,7 +25,72 @@ export const distortionUniforms = {
 	// water: sea-classified ground sinks to a basin under the surface layer
 	uWaterOn: { value: 0 },
 	uWaterY: { value: 0 },
+	// O'Neill cylinder roll (see roll.js): curvature + play-area frame
+	uRollK: { value: 0 },
+	uRollCenter: { value: new Vector2() },
+	uRollEast: { value: new Vector2( 1, 0 ) },
+	uRollGround: { value: 0 },
+	// habitat spin: rigid rotation about the hub axis, applied after the roll
+	uRollSpin: { value: 0 },
+	uRollRadius: { value: 0 },
 };
+
+// Bends world space into a cylinder about the north–south axis: an isometric
+// sheet-roll with uniform curvature uRollK, so east–west arc length is
+// preserved and at full curvature (π / halfWidth) the map edges meet overhead.
+// sin(θ)/k and (1−cosθ)/k are written as e·sinc(θ) and e·(1−cosθ)/θ so the
+// transform stays finite and float-stable as k → 0. Shared by the tile
+// shader, the water layer, and the roll-only patch for voxels/props.
+export const ROLL_GLSL = /* glsl */ `
+uniform float uRollK;
+uniform vec2 uRollCenter;
+uniform vec2 uRollEast;
+uniform float uRollGround;
+uniform float uRollSpin;
+uniform float uRollRadius;
+
+vec3 ringRoll( vec3 p ) {
+
+	if ( uRollK <= 0.0 ) return p;
+
+	vec2 northDir = vec2( - uRollEast.y, uRollEast.x );
+	vec2 rel = p.xz - uRollCenter;
+	float e = dot( rel, uRollEast );
+	float n = dot( rel, northDir );
+	float h = p.y - uRollGround;
+	float th = e * uRollK;
+
+	float s = sin( th );
+	float c = cos( th );
+	float sinc = abs( th ) < 1e-3 ? 1.0 - th * th / 6.0 : s / th;
+	float vers = abs( th ) < 1e-3 ? 0.5 * th : ( 1.0 - c ) / th;
+
+	float eArc = e * sinc - h * s;
+	p.y = uRollGround + e * vers + h * c;
+	p.xz = uRollCenter + uRollEast * eArc + northDir * n;
+
+	// habitat spin: the whole shell turns rigidly about the hub axis while
+	// the starfield stays fixed — in god view the cylinder visibly rotates
+	if ( uRollSpin != 0.0 ) {
+
+		float hubY = uRollGround + uRollRadius;
+		vec2 relXZ = p.xz - uRollCenter;
+		float u = dot( relXZ, uRollEast );
+		float a = dot( relXZ, northDir );
+		float v = p.y - hubY;
+		float cs = cos( uRollSpin );
+		float sn = sin( uRollSpin );
+		float u2 = u * cs - v * sn;
+		float v2 = u * sn + v * cs;
+		p.y = hubY + v2;
+		p.xz = uRollCenter + uRollEast * u2 + northDir * a;
+
+	}
+
+	return p;
+
+}
+`;
 
 export const EFFECTS = [
 	{ id: 0, name: 'None' },
@@ -170,10 +235,13 @@ vec3 ringDistort( vec3 p ) {
 }
 `;
 
+// vRingWorld keeps the pre-roll (flat map) position — the fragment stages
+// (segment tint, voxel discard, zone mute) all reason in flat map space.
 const VERTEX_PROJECT = /* glsl */ `
 vec4 ringWorldPos = modelMatrix * vec4( transformed, 1.0 );
 ringWorldPos.xyz = ringWaterDrop( ringDistort( ringWorldPos.xyz ) );
 vRingWorld = ringWorldPos.xyz;
+ringWorldPos.xyz = ringRoll( ringWorldPos.xyz );
 vec4 mvPosition = viewMatrix * ringWorldPos;
 gl_Position = projectionMatrix * mvPosition;
 `;
@@ -263,7 +331,7 @@ export function patchMaterial( material ) {
 
 		Object.assign( shader.uniforms, distortionUniforms );
 
-		shader.vertexShader = VERTEX_DECLARATIONS + shader.vertexShader
+		shader.vertexShader = ROLL_GLSL + VERTEX_DECLARATIONS + shader.vertexShader
 			.replace( '#include <project_vertex>', VERTEX_PROJECT );
 
 		shader.fragmentShader = FRAGMENT_DECLARATIONS + shader.fragmentShader
@@ -275,7 +343,46 @@ export function patchMaterial( material ) {
 	};
 
 	// Constant suffix lets three.js share one compiled program across all tiles.
-	material.customProgramCacheKey = () => 'ring-distort-5';
+	material.customProgramCacheKey = () => 'ring-distort-7';
+	material.needsUpdate = true;
+
+}
+
+const ROLL_PROJECT = /* glsl */ `
+vec4 ringLocalPos = vec4( transformed, 1.0 );
+#ifdef USE_INSTANCING
+ringLocalPos = instanceMatrix * ringLocalPos;
+#endif
+vec4 ringWorldPos = modelMatrix * ringLocalPos;
+ringWorldPos.xyz = ringRoll( ringWorldPos.xyz );
+vec4 mvPosition = viewMatrix * ringWorldPos;
+gl_Position = projectionMatrix * mvPosition;
+`;
+
+// Splices the cylinder roll into an existing shader (for materials that
+// already have their own onBeforeCompile customisation).
+export function applyRollToShader( shader ) {
+
+	shader.uniforms.uRollK = distortionUniforms.uRollK;
+	shader.uniforms.uRollCenter = distortionUniforms.uRollCenter;
+	shader.uniforms.uRollEast = distortionUniforms.uRollEast;
+	shader.uniforms.uRollGround = distortionUniforms.uRollGround;
+	shader.uniforms.uRollSpin = distortionUniforms.uRollSpin;
+	shader.uniforms.uRollRadius = distortionUniforms.uRollRadius;
+	shader.vertexShader = ROLL_GLSL + shader.vertexShader
+		.replace( '#include <project_vertex>', ROLL_PROJECT );
+
+}
+
+// Roll-only patch for auxiliary world geometry (voxel meshes, park props):
+// it follows the cylinder but skips the tile-only distortion/color pipeline.
+export function patchRollOnly( material ) {
+
+	if ( material.userData.ringPatched ) return;
+	material.userData.ringPatched = true;
+
+	material.onBeforeCompile = ( shader ) => applyRollToShader( shader );
+	material.customProgramCacheKey = () => 'ring-roll-2';
 	material.needsUpdate = true;
 
 }

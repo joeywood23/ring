@@ -8,6 +8,7 @@ import {
 	Vector3,
 	Quaternion,
 } from 'three';
+import { patchRollOnly } from './effects.js';
 
 // Spawnable skate props. Ramps live in `rideable`, which SkateMode includes in
 // its ground/wall raycasts, so the regular rolling physics carries the skater
@@ -24,6 +25,9 @@ const RAIL_RADIUS = 0.05;
 
 const WOOD = new MeshLambertMaterial( { color: 0x9a7b4f } );
 const METAL = new MeshLambertMaterial( { color: 0xc4c9d4 } );
+// props left on the map curl up with the cylinder roll like everything else
+patchRollOnly( WOOD );
+patchRollOnly( METAL );
 
 const UP = new Vector3( 0, 1, 0 );
 const _dir = new Vector3();

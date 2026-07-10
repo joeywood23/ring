@@ -262,33 +262,103 @@ canvas { display: block; }
 #panel { display: none !important; }
 #minimap { display: none !important; }
 #hint { display: none !important; }
+/* the map is an O'Neill cylinder by default — no roll controls */
+#roll-ctl { display: none !important; }
 
+/* quiet text actions, top right */
 #drop-bar {
   position: fixed;
-  bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 18px;
+  right: 22px;
   display: flex;
-  gap: 10px;
+  align-items: center;
+  gap: 26px;
   z-index: 30;
 }
 #drop-bar.hidden { display: none; }
 
 .drop-btn {
-  padding: 12px 26px;
-  font-size: 15px;
+  padding: 4px 0;
+  font-size: 12px;
   font-weight: 600;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: linear-gradient(90deg, #00b8a9, #2196f3);
-  color: #fff;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.68);
+  background: none;
+  border: none;
   cursor: pointer;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.65);
+  transition: color 0.15s ease;
 }
-.drop-btn:hover { filter: brightness(1.15); }
 
-.drop-btn.targeting {
-  background: linear-gradient(90deg, #e65100, #f9a825);
+.drop-btn:hover { color: #fff; }
+
+/* glyph actions (home, pause/play) sit alongside the text ones */
+.drop-icon {
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 2px 0;
+}
+
+.drop-btn.targeting { color: #f9a825; }
+.drop-btn.targeting:hover { color: #ffc94d; }
+
+/* ---- area menu ---- */
+#area-ctl { position: relative; }
+
+#area-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+  padding: 6px;
+  background: rgba(13, 17, 23, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+#area-menu.hidden { display: none; }
+
+#area-menu button {
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: left;
+  color: rgba(255, 255, 255, 0.75);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#area-menu button:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+#area-menu button.active { color: #4fc3f7; }
+
+/* ---- O'Neill cylinder roll ---- */
+#roll-ctl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 12px;
+  margin-left: 2px;
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.roll-btn { background: linear-gradient(90deg, #5e35b1, #b721ff); }
+.roll-btn.rolled { background: linear-gradient(90deg, #37474f, #607d8b); }
+
+#roll-slider {
+  width: 130px;
+  accent-color: #b06ff7;
+  cursor: pointer;
 }
 
 #target-hint {

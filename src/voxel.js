@@ -15,10 +15,11 @@ import {
 	UnsignedByteType,
 	NearestFilter,
 } from 'three';
-import { distortionUniforms } from './effects.js';
+import { distortionUniforms, applyRollToShader, patchRollOnly } from './effects.js';
 import { CLASS_RGB } from './segment.js';
 import { TerrainGrid } from './terrain.js';
 import { PLAY_BOUNDS } from './bounds.js';
+import { currentArea } from './areas.js';
 
 // Whole-play-area voxel map, built once at a voxel size fixed at build time.
 // Heights come from data, not the streamed mesh: AWS terrarium elevation for
@@ -32,7 +33,7 @@ import { PLAY_BOUNDS } from './bounds.js';
 
 const CHUNK = 128;        // columns per chunk side
 const JOB_BUDGET_MS = 7;  // per-frame build budget
-const FALLBACK_MSL_Y = - 32.5; // local Y of sea level if calibration fails
+const FALLBACK_MSL_Y = currentArea().groundY - 0.5; // local Y of sea level if calibration fails
 
 // face shading is baked into vertex colors (material is unlit)
 const SHADE_TOP = 1.0;
@@ -296,6 +297,7 @@ export class VoxelWorld {
 		material.onBeforeCompile = ( shader ) => {
 
 			Object.assign( shader.uniforms, fineUniforms );
+			applyRollToShader( shader ); // vVoxWorld stays pre-roll (flat space)
 			shader.vertexShader = 'varying vec3 vVoxWorld;\n' + shader.vertexShader.replace(
 				'#include <begin_vertex>',
 				'#include <begin_vertex>\n\tvVoxWorld = ( modelMatrix * vec4( position, 1.0 ) ).xyz;'
@@ -319,7 +321,7 @@ varying vec3 vVoxWorld;
 			);
 
 		};
-		material.customProgramCacheKey = () => 'voxel-base-2';
+		material.customProgramCacheKey = () => 'voxel-base-4';
 		const chunksX = Math.ceil( nx / CHUNK );
 		const chunksZ = Math.ceil( nz / CHUNK );
 		let built = 0;
@@ -559,6 +561,7 @@ class FineChunks {
 
 		this.group = null;
 		this.material = new MeshBasicMaterial( { vertexColors: true, side: DoubleSide } );
+		patchRollOnly( this.material ); // fine chunks follow the cylinder roll
 		this._chunks = new Map(); // "cx,cz" → Mesh
 		this._queue = [];
 		this._queued = new Set();

@@ -6,6 +6,7 @@ import {
 	Color,
 	Clock,
 	Vector3,
+	Quaternion,
 	Matrix4,
 	MathUtils,
 	HemisphereLight,
@@ -19,13 +20,15 @@ import {
 	UpdateOnChangePlugin,
 	ReorientationPlugin,
 } from '3d-tiles-renderer/plugins';
-import { distortionUniforms, patchMaterial, EFFECTS, COLOR_MODES } from './effects.js';
+import { distortionUniforms, patchMaterial, patchRollOnly, EFFECTS, COLOR_MODES } from './effects.js';
+import { AREAS, currentArea, selectArea } from './areas.js';
 import { LOCATIONS, cameraGeoForLocation } from './locations.js';
 import { Minimap } from './minimap.js';
 import { SkateMode, ensureBVH, PHYSICS, PHYSICS_CONTROLS } from './skate.js';
 import { SkatePark } from './props.js';
 import { PedestrianMode } from './walk.js';
 import { PigeonMode } from './fly.js';
+import { SailboatMode } from './sail.js';
 import { SkateAudio } from './sound.js';
 import { PlayArea, createPlayRegionPlugin } from './bounds.js';
 import { DropTargeter } from './dropTarget.js';
@@ -33,11 +36,19 @@ import { DetailOverlay } from './detail.js';
 import { Segmentation } from './segment.js';
 import { VoxelWorld } from './voxel.js';
 import { WaterLayer } from './water.js';
+import { CylinderRoll, RollLODPlugin, createHullMesh } from './roll.js';
+import { StarField } from './stars.js';
 
 const KEY_STORAGE = 'ring_google_tiles_key';
 // Referrer-restricted public key; a key saved via the modal takes precedence.
 const DEFAULT_KEY = 'AIzaSyA2l_pwBwS5_Qyw0b4tDsULIKPGhgoAmpA';
-const BAY_CENTER = { lat: 37.79, lon: - 122.35 }; // local frame origin, mid-bay
+const AREA = currentArea(); // which patch of the globe we're playing in
+const ORIGIN = AREA.origin; // local frame origin, parked over local water
+
+// TEMPORARY: the water layer reads confused in rolled space (sea level vs the
+// sunken basin vs the surface sheet) — keep it off until reworked. Flipping
+// this back re-enables the segmented sea: sinking, surface waves, swimming.
+const WATER_DISABLED = true;
 
 const state = {
 	wireframe: false,
@@ -48,7 +59,9 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, targeter, detail, park, segments, voxels, water;
+let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, sail, targeter, detail, park, segments, voxels, water, stars;
+const roll = new CylinderRoll();
+const rollLOD = new RollLODPlugin( roll );
 let dropAs = 'skate'; // which mode the pending drop-in enters
 const playArea = new PlayArea();
 const clock = new Clock();
@@ -107,7 +120,11 @@ document.getElementById( 'change-key' ).addEventListener( 'click', () => {
 
 function init( apiKey ) {
 
-	renderer = new WebGLRenderer( { antialias: true } );
+	// Reversed-Z depth: the rolled cylinder puts city geometry ~10 km overhead
+	// behind skate mode's 0.4 m near plane; standard depth precision degrades
+	// to metres out there and z-fights. Falls back gracefully without
+	// EXT_clip_control.
+	renderer = new WebGLRenderer( { antialias: true, reversedDepthBuffer: true } );
 	renderer.setPixelRatio( Math.min( window.devicePixelRatio, 2 ) );
 	renderer.setSize( window.innerWidth, window.innerHeight );
 	document.body.appendChild( renderer.domElement );
@@ -116,9 +133,9 @@ function init( apiKey ) {
 	camera.position.set( 0, 4000, 8000 );
 
 	scene = new Scene();
-	const sky = new Color( 0x8fbbdc );
-	scene.background = sky;
-	scene.fog = new Fog( sky, 30000, 220000 );
+	const space = new Color( 0x030509 ); // the habitat hangs in open space
+	scene.background = space;
+	scene.fog = new Fog( space, 30000, 220000 );
 
 	// tiles are unlit (baked photogrammetry); this only shades the skateboard
 	scene.add( new HemisphereLight( 0xffffff, 0x3a4656, 2.2 ) );
@@ -132,10 +149,11 @@ function init( apiKey ) {
 	tiles.registerPlugin( new TileCompressionPlugin() );
 	tiles.registerPlugin( new UpdateOnChangePlugin() );
 	tiles.registerPlugin( new ReorientationPlugin( {
-		lat: BAY_CENTER.lat * MathUtils.DEG2RAD,
-		lon: BAY_CENTER.lon * MathUtils.DEG2RAD,
+		lat: ORIGIN.lat * MathUtils.DEG2RAD,
+		lon: ORIGIN.lon * MathUtils.DEG2RAD,
 	} ) );
 	tiles.registerPlugin( createPlayRegionPlugin() ); // never load tiles outside the play area
+	tiles.registerPlugin( rollLOD ); // rolled-space LOD so the curled wall isn't horizon-grade
 
 	tiles.setCamera( camera );
 	tiles.setResolutionFromRenderer( camera, renderer );
@@ -165,10 +183,27 @@ function init( apiKey ) {
 		state.rootLoaded = true;
 		keyModal.classList.add( 'hidden' );
 		document.getElementById( 'drop-bar' ).classList.remove( 'hidden' );
-		jumpTo( LOCATIONS[ 0 ] );
 		playArea.configure( latLonToLocal );
 		minimap.configureExtent( playArea );
-		water.start(); // fetches coverage, then floods the segmented sea
+		roll.configure( playArea );
+		roll.scrub( 1 ); // the Bay is an O'Neill cylinder by default
+		roll.update( 0 ); // push curvature into the uniforms before framing
+		scene.add( createHullMesh( playArea, AREA.groundY ) ); // opaque shell for god view
+		stars = new StarField( playArea, roll.radius, AREA.groundY );
+		scene.add( stars.group );
+		if ( ! WATER_DISABLED ) water.start(); // fetches coverage, then floods the segmented sea
+
+		// ?roll=0..1 overrides the curl amount (handy for comparisons)
+		const rollParam = parseFloat( new URLSearchParams( location.search ).get( 'roll' ) );
+		if ( ! isNaN( rollParam ) ) {
+
+			roll.scrub( rollParam );
+			roll.update( 0 );
+
+		}
+
+		updateRollButton();
+		jumpTo( LOCATIONS[ 0 ] ); // rolled-aware: opens on the area's home preset
 
 	} );
 
@@ -195,8 +230,8 @@ function init( apiKey ) {
 		renderer,
 		apiKey,
 		dracoLoader,
-		latRad: BAY_CENTER.lat * MathUtils.DEG2RAD,
-		lonRad: BAY_CENTER.lon * MathUtils.DEG2RAD,
+		latRad: ORIGIN.lat * MathUtils.DEG2RAD,
+		lonRad: ORIGIN.lon * MathUtils.DEG2RAD,
 		container: document.getElementById( 'minimap' ),
 		marker: document.getElementById( 'minimap-marker' ),
 		onPick: ( point ) => flyToPoint( point ),
@@ -261,6 +296,16 @@ function init( apiKey ) {
 		camera,
 		tilesGroup: tiles.group,
 		domElement: renderer.domElement,
+		roll,
+		// sailboats only drop on water — the marker shows red elsewhere and
+		// the aiming hint says why a click would be refused
+		validate: ( point ) => {
+
+			const ok = dropAs !== 'sail' || sail.isWaterPoint( point );
+			setTargetHint( ok ? null : 'sailboats need open water — aim at the Bay' );
+			return ok;
+
+		},
 		onSelect: ( point ) => {
 
 			setDropButtonState( false );
@@ -280,6 +325,32 @@ function init( apiKey ) {
 	segments = new Segmentation( { playArea } );
 	voxels = new VoxelWorld( { scene, tilesGroup: tiles.group, segments, playArea } );
 	water = new WaterLayer( { scene, playArea, segments, tilesGroup: tiles.group } );
+
+	sail = new SailboatMode( {
+		scene,
+		camera,
+		playArea,
+		sea,
+		segments,
+		audio,
+		hud,
+		tilesGroup: tiles.group,
+		onExit: onModeExit,
+	} );
+
+	// Creature visuals curl with the cylinder in the shader, like the tiles.
+	// Their flat-space bounds would be culled wrongly against the rolled
+	// camera, so culling is off for these small always-near meshes.
+	for ( const root of [ skate.board, skate.shadow, walker.body, walker.shadow, pigeon.body, pigeon.shadow, sail.body, sail.wake.group ] ) {
+
+		root.traverse( ( child ) => {
+
+			child.frustumCulled = false;
+			if ( child.isMesh && child.material ) patchRollOnly( child.material );
+
+		} );
+
+	}
 
 	bindUI();
 	window.addEventListener( 'resize', onResize );
@@ -342,10 +413,20 @@ function viewForLocation( loc ) {
 function jumpTo( loc ) {
 
 	const { camPos, target } = viewForLocation( loc );
+	distortionUniforms.uCenter.value.set( target.x, 0, target.z ); // flat space
+	roll.pointToRolled( camPos ); // frame the curled city, not its flat ghost
+	roll.pointToRolled( target );
 	camera.position.copy( camPos );
 	state.lookTarget.copy( target );
 	camera.lookAt( target );
-	distortionUniforms.uCenter.value.set( target.x, 0, target.z );
+
+}
+
+// Home: snap straight back to the area's postcard view.
+function goHome() {
+
+	if ( ! state.rootLoaded || state.flying || groundMode() ) return;
+	jumpTo( LOCATIONS[ 0 ] );
 
 }
 
@@ -382,18 +463,19 @@ function flyToPoint( point ) {
 // Skate mode
 // ---------------------------------------------------------------------------
 
-// the active embodied mode (skate, pedestrian, or pigeon), or null when
-// flying the free map camera
+// the active embodied mode (skate, pedestrian, pigeon, or sailboat), or null
+// when flying the free map camera
 function groundMode() {
 
 	if ( skate && skate.active ) return skate;
 	if ( walker && walker.active ) return walker;
 	if ( pigeon && pigeon.active ) return pigeon;
+	if ( sail && sail.active ) return sail;
 	return null;
 
 }
 
-const DROP_LABELS = { skate: '🛹 Skate', pigeon: '🐦 Pigeon' };
+const DROP_LABELS = { skate: 'Skate', pigeon: 'Pigeon', sail: 'Sail' };
 
 function setDropButtonState( targeting ) {
 
@@ -402,11 +484,23 @@ function setDropButtonState( targeting ) {
 		const btn = document.getElementById( `drop-${ m }` );
 		const on = targeting && m === dropAs;
 		btn.classList.toggle( 'targeting', on );
-		btn.textContent = on ? '✕ Cancel' : DROP_LABELS[ m ];
+		btn.textContent = on ? 'Cancel' : DROP_LABELS[ m ];
 
 	}
 
 	document.getElementById( 'target-hint' ).classList.toggle( 'hidden', ! targeting );
+	if ( targeting ) setTargetHint( null );
+
+}
+
+const TARGET_HINT_DEFAULT = 'click a spot to drop in  ·  drag to look around  ·  Esc to cancel';
+
+// swaps the aiming hint (e.g. when the sail marker is over dry land)
+function setTargetHint( text ) {
+
+	const el = document.getElementById( 'target-hint' );
+	const next = text || TARGET_HINT_DEFAULT;
+	if ( el.textContent !== next ) el.textContent = next;
 
 }
 
@@ -423,6 +517,7 @@ function toggleDropTargeting( as ) {
 		} else {
 
 			dropAs = as; // re-aim the pending drop at the other mode
+			if ( as === 'sail' ) segments.ensureData(); // boats need the water map
 			setDropButtonState( true );
 
 		}
@@ -432,6 +527,8 @@ function toggleDropTargeting( as ) {
 	}
 
 	dropAs = as;
+	// boats need the water coverage map — start it loading while the user aims
+	if ( as === 'sail' ) segments.ensureData();
 	ensureBVH( tiles.group ); // one-time raycast prep for the loaded tiles
 	targeter.begin();
 	setDropButtonState( true );
@@ -448,7 +545,8 @@ function enterModeAt( point ) {
 	playArea.constrain( point, null, 30 );
 	camera.getWorldDirection( _dir ); // face the way the camera was looking
 	if ( dropAs === 'pigeon' ) pigeon.enter( point, _dir );
-	else skate.enter( point, _dir ); // board and bird never mix — Esc to switch
+	else if ( dropAs === 'sail' ) sail.enter( point, _dir );
+	else skate.enter( point, _dir ); // the modes never mix — Esc to switch
 	detail.setActive( state.upscale );
 	updateUpscaleStatus();
 
@@ -601,6 +699,11 @@ function animate() {
 	const dt = Math.min( clock.getDelta(), 0.1 );
 	distortionUniforms.uTime.value += dt * state.timeSpeed;
 
+	// sea level is the cylinder shell radius reference once it's calibrated
+	roll.setGround( water && water.seaY !== null ? water.seaY : AREA.groundY );
+	roll.update( dt ); // also advances the habitat spin; the stars stay fixed
+	syncRollUI();
+
 	const mode = groundMode();
 	if ( mode ) {
 
@@ -615,6 +718,19 @@ function animate() {
 	}
 
 	camera.updateMatrixWorld();
+	rollLOD.setView( camera, !! mode ); // rolled render pose drives tile detail
+
+	// UpdateOnChangePlugin only reacts to camera motion — while the roll
+	// animates or the habitat spins, the effective view changes with the
+	// camera still, so poke it (spin throttled to ~0.5° steps)
+	if ( roll.k !== _lastRollK || Math.abs( roll.spinAngle - _lastSpin ) > 0.0087 ) {
+
+		_lastRollK = roll.k;
+		_lastSpin = roll.spinAngle;
+		tiles.dispatchEvent( { type: 'needs-update' } );
+
+	}
+
 	tiles.update();
 
 	if ( ! state.flying ) updateDistortionCenter();
@@ -640,9 +756,87 @@ function animate() {
 
 	targeter.update( dt );
 	updateProgress();
+	updateRolledCulling();
+
+	// Embodied modes simulate in flat space; rendering their camera through
+	// the roll turns flat -Y gravity into the habitat's outward spin gravity.
+	const camRolled = mode && roll.k > 0;
+	if ( camRolled ) {
+
+		_camFlatPos.copy( camera.position );
+		_camFlatQuat.copy( camera.quaternion );
+		roll.poseToRolled( camera.position, camera.quaternion );
+		camera.updateMatrixWorld();
+
+	}
+
 	renderer.render( scene, camera );
 
+	if ( camRolled ) {
+
+		camera.position.copy( _camFlatPos );
+		camera.quaternion.copy( _camFlatQuat );
+		camera.updateMatrixWorld();
+
+	}
+
 	// minimap is hidden with the rest of the UI — skip its render work
+
+}
+
+const _camFlatPos = new Vector3();
+const _camFlatQuat = new Quaternion();
+let _cullingOff = false;
+let _lastRollK = 0;
+let _lastSpin = 0;
+
+// Frustum culling tests flat-space bounds, which lie about where rolled
+// meshes render. Re-checked every frame while curled so tiles and voxel
+// chunks that stream in stay uncullable; restored once when flat again.
+function updateRolledCulling() {
+
+	const rolled = roll.u > 0;
+	if ( ! rolled && ! _cullingOff ) return;
+
+	const groups = [ tiles.group, park.rideable, park.group ];
+	if ( voxels.group ) groups.push( voxels.group );
+	if ( voxels.fine && voxels.fine.group ) groups.push( voxels.fine.group );
+
+	for ( const g of groups ) {
+
+		g.traverse( ( child ) => {
+
+			if ( child.isMesh ) child.frustumCulled = ! rolled;
+
+		} );
+
+	}
+
+	_cullingOff = rolled;
+
+}
+
+// ---------------------------------------------------------------------------
+// O'Neill cylinder controls
+// ---------------------------------------------------------------------------
+
+function updateRollButton() {
+
+	const btn = document.getElementById( 'drop-roll' );
+	const on = roll.target > 0.5;
+	btn.textContent = on ? '🌐 Flatten' : '🛰 O’Neill';
+	btn.classList.toggle( 'rolled', on );
+
+}
+
+let _rollShown = - 1;
+
+// reflect the animated phase into the slider without touching the DOM idly
+function syncRollUI() {
+
+	if ( roll.u === _rollShown ) return;
+	_rollShown = roll.u;
+	document.getElementById( 'roll-slider' ).value = roll.u;
 
 }
 
@@ -734,7 +928,9 @@ function buildPhysicsControls() {
 
 function bindUI() {
 
-	for ( const m of [ 'skate', 'pigeon' ] ) {
+	bindAreaMenu();
+
+	for ( const m of [ 'skate', 'pigeon', 'sail' ] ) {
 
 		document.getElementById( `drop-${ m }` ).addEventListener( 'click', ( e ) => {
 
@@ -744,6 +940,43 @@ function bindUI() {
 		} );
 
 	}
+
+	document.getElementById( 'drop-home' ).addEventListener( 'click', ( e ) => {
+
+		goHome();
+		e.target.blur();
+
+	} );
+
+	const pauseBtn = document.getElementById( 'drop-pause' );
+	pauseBtn.addEventListener( 'click', ( e ) => {
+
+		roll.spinPaused = ! roll.spinPaused;
+		// ︎ keeps the play glyph text-styled instead of emoji-styled
+		pauseBtn.textContent = roll.spinPaused ? '▶︎' : '❚❚';
+		pauseBtn.title = roll.spinPaused ? 'Resume rotation' : 'Pause rotation';
+		e.target.blur();
+
+	} );
+
+	document.getElementById( 'drop-roll' ).addEventListener( 'click', ( e ) => {
+
+		if ( ! state.rootLoaded || groundMode() ) return;
+		roll.toggle();
+		updateRollButton();
+		e.target.blur();
+
+	} );
+
+	const rollSlider = document.getElementById( 'roll-slider' );
+	rollSlider.addEventListener( 'input', ( e ) => {
+
+		if ( ! state.rootLoaded ) return;
+		roll.scrub( parseFloat( e.target.value ) );
+		updateRollButton();
+
+	} );
+	rollSlider.addEventListener( 'change', ( e ) => e.target.blur() );
 
 	const upscaleBox = document.getElementById( 'upscale' );
 	upscaleBox.checked = state.upscale;
@@ -854,6 +1087,40 @@ function bindUI() {
 			if ( child.isMesh && child.material ) child.material.wireframe = state.wireframe;
 
 		} );
+
+	} );
+
+}
+
+// Area menu: stamp the shared play footprint onto another patch of the globe.
+// Selecting stores the area id and reloads — init stays single-path.
+function bindAreaMenu() {
+
+	const btn = document.getElementById( 'drop-area' );
+	const menu = document.getElementById( 'area-menu' );
+	btn.textContent = `${ AREA.name } ▾`;
+
+	for ( const area of AREAS ) {
+
+		const item = document.createElement( 'button' );
+		item.textContent = area.name;
+		item.classList.toggle( 'active', area.id === AREA.id );
+		item.addEventListener( 'click', () => selectArea( area.id ) );
+		menu.appendChild( item );
+
+	}
+
+	btn.addEventListener( 'click', ( e ) => {
+
+		menu.classList.toggle( 'hidden' );
+		e.target.blur();
+
+	} );
+
+	// clicking anywhere else closes the menu
+	window.addEventListener( 'pointerdown', ( e ) => {
+
+		if ( e.target !== btn && ! menu.contains( e.target ) ) menu.classList.add( 'hidden' );
 
 	} );
 

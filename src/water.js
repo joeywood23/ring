@@ -8,7 +8,8 @@ import {
 	Raycaster,
 	DoubleSide,
 } from 'three';
-import { distortionUniforms } from './effects.js';
+import { distortionUniforms, ROLL_GLSL } from './effects.js';
+import { currentArea } from './areas.js';
 
 // Transparent water surface over everything the coverage map segments as
 // water. The photogrammetry beneath is sunk into a basin by the tile shader
@@ -23,6 +24,7 @@ const WAVE_RADIUS = 260;   // falloff distance of the player swells
 const SEA_LIFT = 0.25;     // surface sits just above the (sunken) mesh water
 
 const VERT = /* glsl */ `
+${ ROLL_GLSL }
 uniform float uTime;
 uniform vec2 uFocus;
 uniform sampler2D uSegTex;
@@ -31,6 +33,7 @@ uniform vec2 uSegEast;
 uniform vec2 uSegNorth;
 uniform vec2 uSegHalf;
 varying vec3 vWorld;
+varying vec2 vFlatXZ; // pre-roll position for flat-map tests (far-plane hole)
 varying float vWater;
 
 float waterMask( vec2 xz ) {
@@ -61,6 +64,9 @@ void main() {
 	float amp = ( 0.55 * exp( - d / ${ WAVE_RADIUS.toFixed( 1 ) } ) + 0.05 ) * w;
 	world.y += waveHeight( world.xz, uTime ) * amp;
 
+	vFlatXZ = world.xz;
+	world.xyz = ringRoll( world.xyz );
+
 	vWorld = world.xyz;
 	vWater = w;
 	gl_Position = projectionMatrix * viewMatrix * world;
@@ -75,6 +81,7 @@ uniform float uFogFar;
 uniform vec2 uFocus;
 uniform float uFarHole; // half-size of the square hole under the near patch
 varying vec3 vWorld;
+varying vec2 vFlatXZ;
 varying float vWater;
 
 void main() {
@@ -82,7 +89,7 @@ void main() {
 	if ( vWater < 0.35 ) discard;
 
 	#ifdef FAR_PLANE
-	vec2 fd = abs( vWorld.xz - uFocus );
+	vec2 fd = abs( vFlatXZ - uFocus );
 	if ( max( fd.x, fd.y ) < uFarHole ) discard;
 	#endif
 
@@ -138,6 +145,12 @@ export class WaterLayer {
 			uSegHalf: distortionUniforms.uSegHalf,
 			uFocus: { value: this._focus },
 			uFarHole: { value: PATCH_SIZE / 2 - 4 },
+			uRollK: distortionUniforms.uRollK,
+			uRollCenter: distortionUniforms.uRollCenter,
+			uRollEast: distortionUniforms.uRollEast,
+			uRollGround: distortionUniforms.uRollGround,
+			uRollSpin: distortionUniforms.uRollSpin,
+			uRollRadius: distortionUniforms.uRollRadius,
 			uFogColor: { value: new Color() },
 			uFogNear: { value: 1 },
 			uFogFar: { value: 2 },
@@ -172,7 +185,7 @@ export class WaterLayer {
 
 		} else {
 
-			this.seaY = this.seaY === null ? - 32.0 : this.seaY;
+			this.seaY = this.seaY === null ? currentArea().groundY : this.seaY;
 			// mid-bay tile not streamed in yet — refine once it is
 			if ( attempt < 8 ) setTimeout( () => this._calibrate( attempt + 1 ), 3000 );
 
@@ -211,8 +224,9 @@ export class WaterLayer {
 		this.patch.position.y = y;
 		this.patch.frustumCulled = false;
 
-		// coarse plane for the rest of the bay
-		const farGeo = new PlaneGeometry( pa.halfWidth * 2, pa.halfHeight * 2, 48, 48 );
+		// coarse plane for the rest of the bay — dense enough east–west that
+		// the cylinder roll bends it smoothly (192-gon at full curl)
+		const farGeo = new PlaneGeometry( pa.halfWidth * 2, pa.halfHeight * 2, 192, 64 );
 		farGeo.rotateX( - Math.PI / 2 );
 		this.far = new Mesh( farGeo, this._material( true ) );
 		this.far.position.set( pa.center.x, y, pa.center.z );

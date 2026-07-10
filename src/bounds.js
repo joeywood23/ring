@@ -1,15 +1,13 @@
 import { Box3, Matrix4, Vector3, MathUtils } from 'three';
 import { WGS84_ELLIPSOID, OBJECT_FRAME, OBB } from '3d-tiles-renderer';
 import { LoadRegionPlugin, OBBRegion } from '3d-tiles-renderer/plugins';
+import { currentArea, boundsForArea } from './areas.js';
 
-// The playable SF Bay Area box — single source of truth for tile loading,
-// camera/skate limits, and the minimap crop.
-export const PLAY_BOUNDS = {
-	minLat: 37.70,
-	maxLat: 37.88,
-	minLon: - 122.57,
-	maxLon: - 122.19,
-};
+// The playable box — single source of truth for tile loading, camera/skate
+// limits, and the minimap crop. Every area shares one metric footprint
+// (~33 × 40 km, sized so the habitat cylinder is ~40 km end to end); the
+// area menu picks which patch of the globe it stamps onto.
+export const PLAY_BOUNDS = boundsForArea( currentArea() );
 
 const MID_LAT = ( PLAY_BOUNDS.minLat + PLAY_BOUNDS.maxLat ) / 2;
 const MID_LON = ( PLAY_BOUNDS.minLon + PLAY_BOUNDS.maxLon ) / 2;

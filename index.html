@@ -128,10 +128,21 @@
     </div>
   </div>
 
-  <!-- minimal drop-in bar (the full panel is hidden) -->
+  <!-- minimal drop-in actions (the full panel is hidden) -->
   <div id="drop-bar" class="hidden">
-    <button id="drop-skate" class="drop-btn">🛹 Skate</button>
-    <button id="drop-pigeon" class="drop-btn">🐦 Pigeon</button>
+    <div id="area-ctl">
+      <button id="drop-area" class="drop-btn" title="Choose an area of the globe"></button>
+      <div id="area-menu" class="hidden"></div>
+    </div>
+    <button id="drop-home" class="drop-btn drop-icon" title="Home view">&#8962;</button>
+    <button id="drop-pause" class="drop-btn drop-icon" title="Pause rotation">&#10074;&#10074;</button>
+    <button id="drop-skate" class="drop-btn">Skate</button>
+    <button id="drop-pigeon" class="drop-btn">Pigeon</button>
+    <button id="drop-sail" class="drop-btn">Sail</button>
+    <div id="roll-ctl" title="Roll the Bay into an O'Neill cylinder">
+      <button id="drop-roll" class="drop-btn roll-btn">🛰 O’Neill</button>
+      <input id="roll-slider" type="range" min="0" max="1" step="0.001" value="0" />
+    </div>
   </div>
 
   <div id="minimap" class="hidden" title="Click anywhere to fly there">
