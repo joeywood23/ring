@@ -265,6 +265,44 @@ canvas { display: block; }
 /* the map is an O'Neill cylinder by default — no roll controls */
 #roll-ctl { display: none !important; }
 
+/* ---- live tuning panel — toggled with T / the Tune button, in game too ---- */
+#tune-panel {
+  position: fixed;
+  top: 58px;
+  right: 14px;
+  width: 252px;
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  background: rgba(13, 17, 27, 0.82);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 12px 14px;
+  z-index: 40;
+}
+
+.slider-group {
+  margin: 11px 0 2px;
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #6f7890;
+}
+.slider-group:first-child { margin-top: 0; }
+
+#physics-reset {
+  margin-top: 10px;
+  width: 100%;
+  padding: 6px 0;
+  font-size: 11px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cdd3e0;
+  cursor: pointer;
+}
+#physics-reset:hover { background: rgba(255, 255, 255, 0.13); }
+
 /* quiet text actions, top right */
 #drop-bar {
   position: fixed;
@@ -341,6 +379,30 @@ canvas { display: block; }
 }
 #area-menu button:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
 #area-menu button.active { color: #4fc3f7; }
+
+/* map scale → generate: footprint size in %, applied on regenerate */
+.scale-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 12px 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.scale-row input[type="range"] { flex: 1; accent-color: #7c4dff; }
+.scale-val {
+  width: 38px;
+  text-align: right;
+  font-size: 11px;
+  color: #9aa3b5;
+  font-variant-numeric: tabular-nums;
+}
+#area-menu #scale-gen { color: #4fc3f7; }
+#area-menu #scale-gen:disabled {
+  color: rgba(255, 255, 255, 0.3);
+  cursor: default;
+  background: none;
+}
 
 /* ---- O'Neill cylinder roll ---- */
 #roll-ctl {

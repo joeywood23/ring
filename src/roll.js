@@ -6,8 +6,11 @@ import {
 	Frustum,
 	Sphere,
 	Mesh,
+	Group,
 	PlaneGeometry,
+	CylinderGeometry,
 	MeshBasicMaterial,
+	AdditiveBlending,
 } from 'three';
 import { distortionUniforms, patchRollOnly } from './effects.js';
 
@@ -46,6 +49,7 @@ export class CylinderRoll {
 		this.spinAngle = 0;
 		this.spinOmega = 0;
 		this.spinPaused = false;
+		this.closure = 0; // how "closed" the cylinder is — gates spin gravity
 
 	}
 
@@ -100,6 +104,77 @@ export class CylinderRoll {
 	get k() {
 
 		return distortionUniforms.uRollK.value;
+
+	}
+
+	// flat-space height of the hub axis
+	get hubY() {
+
+		return distortionUniforms.uRollGround.value + distortionUniforms.uRollRadius.value;
+
+	}
+
+	// ------------------------------------------------------------------
+	// Spin gravity. Rotational gravity is ω²r — linear in the distance to
+	// the axis — and the roll maps flat height straight onto that distance,
+	// so one signed factor covers the whole habitat: 1 g at the shell, zero
+	// on the hub axis, negative past it (outward toward the far side).
+	// Blends back to uniform 1 g while the sheet is open.
+	// ------------------------------------------------------------------
+
+	gravityAt( y ) {
+
+		if ( ! this.ready || this.closure <= 0 ) return 1;
+		const f = ( this.hubY - y ) / distortionUniforms.uRollRadius.value;
+		return MathUtils.lerp( 1, f, this.closure );
+
+	}
+
+	// has a flat-space point risen past the hub axis? (only once closed)
+	pastAxis( y ) {
+
+		return this.ready && this.closure > 0.999 && y > this.hubY;
+
+	}
+
+	// ------------------------------------------------------------------
+	// Axis crossing. Every rolled point has two flat preimages — (e, h) and
+	// the antipodal (e ± halfWidth, 2·hubY − y) — and both render to the
+	// same place, so swapping branches mid-flight is invisible. Cross when
+	// a faller passes the hub: on the new branch the terrain they're
+	// heading for is genuinely beneath them, gravity reads positive again,
+	// and the ordinary flat-space machinery (raycasts, camera, physics)
+	// just keeps working. seamPoint remaps a position, seamDir applies the
+	// matching π rotation about the north axis to a direction.
+	// ------------------------------------------------------------------
+
+	seamPoint( p ) {
+
+		const c = distortionUniforms.uRollCenter.value;
+		const E = distortionUniforms.uRollEast.value;
+		const halfW = Math.PI / this._k1;
+
+		const rx = p.x - c.x, rz = p.z - c.y;
+		let e = rx * E.x + rz * E.y;
+		const n = rx * ( - E.y ) + rz * E.x;
+		e += e < 0 ? halfW : - halfW; // antipodal east coordinate, wrapped in-bounds
+
+		return p.set(
+			c.x + E.x * e - E.y * n,
+			2 * this.hubY - p.y,
+			c.y + E.y * e + E.x * n
+		);
+
+	}
+
+	seamDir( v ) {
+
+		const E = distortionUniforms.uRollEast.value;
+		const ve = v.x * E.x + v.z * E.y;
+		v.x -= 2 * ve * E.x;
+		v.z -= 2 * ve * E.y;
+		v.y = - v.y;
+		return v;
 
 	}
 
@@ -253,6 +328,7 @@ export class CylinderRoll {
 		// smoothstep easing keeps lift-off and the final closing gentle
 		const t = this.u * this.u * ( 3 - 2 * this.u );
 		distortionUniforms.uRollK.value = t * this._k1;
+		this.closure = MathUtils.smoothstep( this.u, 0.85, 1 );
 
 		// the habitat only spins once fully closed (a partially rolled sheet
 		// cartwheeling about the hub would just look broken); pause freezes
@@ -288,6 +364,64 @@ export function createHullMesh( playArea, groundY ) {
 	mesh.frustumCulled = false; // flat bounds lie about the rolled shell
 	mesh.raycast = () => {};
 	return mesh;
+
+}
+
+// Sun rod: a light-emitting solid down the habitat's central axis — the
+// classic O'Neill light source, and a landmark that shows the player the hub
+// from anywhere on the shell. A bright core cylinder plus a wider additive
+// halo sleeve, spanning the full habitat length along the north–south axis
+// through the map center. It sits at uRollGround + radius, the same hub the
+// spin math uses, and only fades in as the cylinder closes — a sun rod
+// floating over a half-rolled sheet would read as a glitch. Rotationally
+// symmetric about the spin axis, so the habitat spin needs no handling.
+const ROD_RADIUS_FRAC = 0.022; // core radius as a fraction of the tube radius
+
+export class AxisLight {
+
+	constructor( playArea, radius ) {
+
+		const len = playArea.halfHeight * 2;
+		const core = radius * ROD_RADIUS_FRAC;
+
+		this._coreMat = new MeshBasicMaterial( { color: 0xfff3cf, fog: false, transparent: true } );
+		const coreMesh = new Mesh( new CylinderGeometry( core, core, len, 24, 1 ), this._coreMat );
+
+		this._haloMat = new MeshBasicMaterial( {
+			color: 0xffe9a8,
+			fog: false,
+			transparent: true,
+			blending: AdditiveBlending,
+			depthWrite: false,
+		} );
+		const halo = new Mesh( new CylinderGeometry( core * 3.2, core * 3.2, len, 24, 1, true ), this._haloMat );
+
+		this.group = new Group();
+		this.group.add( coreMesh, halo );
+
+		// lie along the cylinder axis: north–south through the map center
+		this.group.quaternion.setFromUnitVectors( new Vector3( 0, 1, 0 ), playArea.northDir );
+		this.group.position.set( playArea.center.x, 0, playArea.center.z ); // y tracks the hub per frame
+
+		// pure light: picking, physics, and grounding rays pass through it
+		coreMesh.raycast = () => {};
+		halo.raycast = () => {};
+
+	}
+
+	// fade with the roll phase; hub height follows the calibrated ground
+	update( u ) {
+
+		const a = MathUtils.smoothstep( u, 0.85, 1 );
+		this.group.visible = a > 0.001;
+		if ( ! this.group.visible ) return;
+
+		this.group.position.y =
+			distortionUniforms.uRollGround.value + distortionUniforms.uRollRadius.value;
+		this._coreMat.opacity = a;
+		this._haloMat.opacity = 0.16 * a;
+
+	}
 
 }
 

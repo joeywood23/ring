@@ -1,12 +1,16 @@
 // Playable areas around the globe. Every area stamps the same metric
 // footprint as the original SF Bay box (~33 km east–west, ~40 km
-// north–south) onto a new center, so the O'Neill cylinder, tile budget,
-// segmentation canvas, and physics behave identically — only the place
-// changes. Switching areas stores the id and reloads the page: a full
+// north–south, times the map scale) onto a new center, so the O'Neill
+// cylinder, tile budget, segmentation canvas, and physics behave
+// identically — only the place changes. Switching areas (or regenerating
+// at a new map scale) stores the setting and reloads the page: a full
 // reload keeps init logic single-path (the API key modal does the same).
 //
 // Per area:
-//   lat/lon   — map center; the shared footprint extends around it
+//   lat/lon   — map center: the city's downtown, which is by construction
+//               the rectangular center of the unrolled habitat (PlayArea
+//               clamps to ±half-extents around it, tiles mask around it,
+//               and the map scale shrinks/grows the box toward it)
 //   origin    — local frame origin, parked over water so one downward
 //               raycast at (0,0) measures the local water line
 //   groundY   — resting height of the shell in the local frame (metres,
@@ -24,8 +28,8 @@ export const AREAS = [
 	{
 		id: 'sf-bay',
 		name: 'SF Bay',
-		lat: 37.88,
-		lon: - 122.38,
+		lat: 37.7925, // downtown SF — the Financial District
+		lon: - 122.3970,
 		origin: { lat: 37.79, lon: - 122.35 }, // mid-bay
 		groundY: - 32,
 		locations: [
@@ -38,7 +42,7 @@ export const AREAS = [
 			{ name: 'Marin Headlands', lat: 37.8262, lon: - 122.4997, height: 150, dist: 2800, az: 130, elev: 20 },
 			{ name: 'Oakland', lat: 37.8044, lon: - 122.2712, height: 0, dist: 2400, az: 245, elev: 30 },
 			// steep overview so the camera itself stays inside the playable bounds
-			{ name: 'Whole Bay', lat: 37.7900, lon: - 122.3500, height: 0, dist: 34000, az: 180, elev: 75 },
+			{ name: 'Whole Bay', lat: 37.7925, lon: - 122.3970, height: 0, dist: 34000, az: 180, elev: 75 },
 		],
 	},
 	{
@@ -97,8 +101,8 @@ export const AREAS = [
 	{
 		id: 'nile-delta',
 		name: 'Nile Delta',
-		lat: 29.9792, // Great Pyramid of Giza
-		lon: 31.1342,
+		lat: 30.0444, // downtown Cairo — Tahrir Square
+		lon: 31.2357,
 		origin: { lat: 30.005, lon: 31.228 }, // on the Nile off Roda Island
 		groundY: 35, // Cairo sits ~20 m above a ~+15 m geoid
 		locations: [
@@ -107,12 +111,15 @@ export const AREAS = [
 			{ name: 'Saqqara', lat: 29.8713, lon: 31.2166, height: 60, dist: 1800, az: 200, elev: 26 },
 			{ name: 'Cairo Tower', lat: 30.0459, lon: 31.2243, height: 100, dist: 1500, az: 230, elev: 25 },
 			{ name: 'Citadel', lat: 30.0287, lon: 31.2599, height: 80, dist: 1600, az: 245, elev: 24 },
-			{ name: 'Whole Delta', lat: 29.9792, lon: 31.1342, height: 0, dist: 34000, az: 180, elev: 75 },
+			{ name: 'Whole Delta', lat: 30.0444, lon: 31.2357, height: 0, dist: 34000, az: 180, elev: 75 },
 		],
 	},
 ];
 
 const STORAGE = 'ring_area';
+const SCALE_STORAGE = 'ring_map_scale';
+const SCALE_MIN = 10;
+const SCALE_MAX = 200;
 
 export function currentArea() {
 
@@ -130,14 +137,39 @@ export function selectArea( id ) {
 
 }
 
-// The shared footprint centered on the area, in degrees. Longitude span
-// widens with latitude so the metric width stays identical everywhere.
+// Map scale in percent — 100 is the original footprint. The map always stays
+// centered on the area's lat/lon; the scale only grows or shrinks the box.
+export function mapScale() {
+
+	const v = parseInt( localStorage.getItem( SCALE_STORAGE ), 10 );
+	return Number.isFinite( v ) ? Math.min( Math.max( v, SCALE_MIN ), SCALE_MAX ) : 100;
+
+}
+
+export const MAP_SCALE_RANGE = { min: SCALE_MIN, max: SCALE_MAX };
+
+// Persist a new scale and regenerate the map via reload, like selectArea.
+// No-op if the scale is unchanged.
+export function setMapScale( pct ) {
+
+	pct = Math.round( Math.min( Math.max( pct, SCALE_MIN ), SCALE_MAX ) );
+	if ( pct === mapScale() ) return;
+	localStorage.setItem( SCALE_STORAGE, String( pct ) );
+	window.location.reload();
+
+}
+
+// The shared footprint centered on the area, in degrees, times the map
+// scale. Longitude span widens with latitude so the metric width stays
+// identical everywhere.
 export function boundsForArea( area ) {
 
-	const dLon = WIDTH_M / ( METERS_PER_DEG_LAT * Math.cos( area.lat * Math.PI / 180 ) );
+	const s = mapScale() / 100;
+	const dLat = HEIGHT_DEG * s;
+	const dLon = WIDTH_M * s / ( METERS_PER_DEG_LAT * Math.cos( area.lat * Math.PI / 180 ) );
 	return {
-		minLat: area.lat - HEIGHT_DEG / 2,
-		maxLat: area.lat + HEIGHT_DEG / 2,
+		minLat: area.lat - dLat / 2,
+		maxLat: area.lat + dLat / 2,
 		minLon: area.lon - dLon / 2,
 		maxLon: area.lon + dLon / 2,
 	};

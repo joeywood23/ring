@@ -5,8 +5,9 @@ import { currentArea, boundsForArea } from './areas.js';
 
 // The playable box — single source of truth for tile loading, camera/skate
 // limits, and the minimap crop. Every area shares one metric footprint
-// (~33 × 40 km, sized so the habitat cylinder is ~40 km end to end); the
-// area menu picks which patch of the globe it stamps onto.
+// (~33 × 40 km at 100% map scale, sized so the habitat cylinder is ~40 km
+// end to end); the area menu picks which patch of the globe it stamps onto
+// and what scale to stamp it at.
 export const PLAY_BOUNDS = boundsForArea( currentArea() );
 
 const MID_LAT = ( PLAY_BOUNDS.minLat + PLAY_BOUNDS.maxLat ) / 2;

@@ -41,10 +41,18 @@ export class SkaterRig {
 		this.group = new Group();
 		this._pushPhase = 0;
 		this._swimPhase = 0;
+		this._bailPhase = 0;
 		this._joints = {};
 		this._targets = {};
 		this._hipsTarget = { y: 0.78, z: 0 };
 		this._build();
+
+	}
+
+	// the ragdoll poses joints directly by name
+	joint( name ) {
+
+		return this._joints[ name ];
 
 	}
 
@@ -132,7 +140,12 @@ export class SkaterRig {
 		set( T.armRFore, - 0.30, 0, 0 );
 
 		// --- mode overrides ---
-		if ( state.swimming ) {
+		if ( state.bailing ) {
+
+			this._bailPhase += dt * 7;
+			this._poseBail( T, hips, this._bailPhase );
+
+		} else if ( state.swimming ) {
 
 			this._swimPhase += dt * ( 3 + state.speed * 0.6 );
 			this._poseSwim( T, hips, this._swimPhase );
@@ -161,6 +174,21 @@ export class SkaterRig {
 		} else {
 
 			this._pushPhase = 0.9; // re-enter the cycle near foot-return
+
+		}
+
+		// --- grip-strain overlay: the feet lag their grip points under a hard
+		// shock, so the body compresses to absorb it and the arms shoot up ---
+		const strain = state.gripStrain || 0;
+		if ( strain > 0.02 ) {
+
+			const s = Math.min( strain / 0.25, 1 );
+			hips.y -= s * 0.16;
+			T.hips.x += s * 0.18;
+			T.legLShin.x += s * 0.55;
+			T.legRShin.x += s * 0.55;
+			T.armL.x -= s * 0.6;
+			T.armR.x -= s * 0.6;
 
 		}
 
@@ -216,6 +244,29 @@ export class SkaterRig {
 		set( T.armLFore, - 0.5, 0, 0 );
 		set( T.armR, - 0.4, 0, 0.9 );
 		set( T.armRFore, - 0.5, 0, 0 );
+
+	}
+
+	// bailed: leapt off the board feet-first, body squared to the travel
+	// direction, arms windmilling for balance while the ground approaches
+	_poseBail( T, hips, phase ) {
+
+		const windmill = Math.sin( phase );
+
+		hips.y = 0.72;
+		set( T.hips, 0.15, - 0.2, 0 );
+		set( T.torso, 0.12, 0.1, 0 );
+		set( T.head, - 0.1, 0, 0 );
+		set( T.legL, - 0.35, 0.2, - 0.12 );   // feet reaching for the landing
+		set( T.legLShin, 0.5, 0, 0 );
+		set( T.legLFoot, - 0.15, 0, 0 );
+		set( T.legR, - 0.2, 0.1, 0.12 );
+		set( T.legRShin, 0.4, 0, 0 );
+		set( T.legRFoot, - 0.2, 0, 0 );
+		set( T.armL, windmill * 1.2 - 0.3, 0, - 0.95 );
+		set( T.armLFore, - 0.3, 0, 0 );
+		set( T.armR, - windmill * 1.2 - 0.3, 0, 0.95 );
+		set( T.armRFore, - 0.3, 0, 0 );
 
 	}
 

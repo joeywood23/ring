@@ -15,6 +15,7 @@ import {
 } from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { SkaterRig } from './skater.js';
+import { SkaterRagdoll } from './ragdoll.js';
 import { SkateAudio } from './sound.js';
 
 // Accelerated raycasts against the photogrammetry mesh — a street-level tile
@@ -53,12 +54,32 @@ export const PHYSICS = {
 	jump: 5.5,          // ollie pop velocity
 	maxSpeed: 50,
 	grindWobble: 2.5,   // how aggressively grind balance runs away
+	ragdollAt: 7,       // landing speed (m/s) above which a bail tumbles
+	bailDecel: 6,       // horizontal speed (m/s) lost inside ~0.1 s that rips the rider off
+	driftAfter: 0.7,    // seconds of freefall before the board drifts loose from the rider
+	recoverRadius: 0.9, // land with your CoG within this of the wheels → back on the board
+	// terrain following
+	stepUp: 0.5,        // curbs and small ledges roll over
+	snapDown: 1.2,      // stay glued to ground over bumps below this drop
+	wallSteep: 0.55,    // steeper than this (normal.y below) = wall, not ramp
+	// bail feel
+	decelWindow: 0.12,  // seconds of speed memory for the sudden-stop detector
+	airControl: 4,      // m/s² of drift-phase steering back toward the board
+	recoverDy: 1.2,     // max rider↔board height gap that still counts as landing on it
+	bailHop: 3.4,       // upward pop when jumping off voluntarily
+	// board feel / animation
+	maxLean: 0.30,      // rad of deck roll at full carve
+	manualPitch: 0.32,  // rad of nose-up pitch while manualing
+	pivotAngle: 40,     // truck pivot-axis inclination (deg) — sets steering geometry
+	gripK: 900,         // foot spring stiffness (1/s²) — animation hunker response
+	gripD: 32,          // foot spring damping — settles feet back onto the bolts
 };
 
-// [ key, label, min, max, step ] — spec the panel builds its sliders from
+// Panel spec: [ key, label, min, max, step ] rows, with bare strings starting
+// a labelled section
 export const PHYSICS_CONTROLS = [
+	'Ride',
 	[ 'gravity', 'Gravity', 0, 30, 0.1 ],
-	[ 'airGravity', 'Air grav', 0, 40, 0.1 ],
 	[ 'push', 'Push', 0, 25, 0.1 ],
 	[ 'maxPush', 'Push cap', 1, 40, 0.5 ],
 	[ 'brake', 'Brake', 0, 30, 0.5 ],
@@ -67,31 +88,51 @@ export const PHYSICS_CONTROLS = [
 	[ 'grip', 'Grip', 0.5, 20, 0.1 ],
 	[ 'turnRate', 'Turn', 0.5, 6, 0.05 ],
 	[ 'manualTurn', 'Manual turn', 1, 4, 0.05 ],
-	[ 'jump', 'Ollie', 0, 15, 0.1 ],
 	[ 'maxSpeed', 'Max speed', 5, 100, 1 ],
-	[ 'grindWobble', 'Grind wobble', 0, 8, 0.1 ],
+	'Air',
+	[ 'airGravity', 'Air grav', 0, 40, 0.1 ],
+	[ 'jump', 'Ollie', 0, 15, 0.1 ],
+	'Terrain',
+	[ 'stepUp', 'Step up', 0, 2, 0.05 ],
+	[ 'snapDown', 'Snap down', 0, 4, 0.05 ],
+	[ 'wallSteep', 'Wall steep', 0, 1, 0.01 ],
+	'Grind',
+	[ 'grindWobble', 'Wobble', 0, 8, 0.1 ],
+	'Bail & recover',
+	[ 'bailDecel', 'Bail decel', 1, 15, 0.5 ],
+	[ 'decelWindow', 'Decel win', 0.03, 0.5, 0.01 ],
+	[ 'driftAfter', 'Drift after', 0.2, 3, 0.05 ],
+	[ 'airControl', 'Air steer', 0, 15, 0.5 ],
+	[ 'recoverRadius', 'Recover rad', 0.2, 2, 0.05 ],
+	[ 'recoverDy', 'Recover ht', 0.2, 4, 0.1 ],
+	[ 'ragdollAt', 'Ragdoll at', 1, 20, 0.5 ],
+	[ 'bailHop', 'Bail hop', 0, 8, 0.1 ],
+	'Board feel',
+	[ 'maxLean', 'Carve lean', 0, 0.8, 0.01 ],
+	[ 'manualPitch', 'Manual pitch', 0, 0.8, 0.01 ],
+	[ 'pivotAngle', 'Truck pivot', 10, 70, 1 ],
+	[ 'gripK', 'Foot spring', 100, 3000, 25 ],
+	[ 'gripD', 'Foot damp', 5, 80, 1 ],
 ];
-const STEP_UP = 0.5;       // curbs and small ledges roll over
-const SNAP_DOWN = 1.2;     // stay glued to ground over bumps below this drop
-const WALL_NORMAL_Y = 0.55; // steeper than this (normal.y below) = wall, not ramp
+
+// --- foot grip / bail --------------------------------------------------------
+// The feet are spring-coupled to two grip points on the deck purely for
+// animation — the stretch feeds the rig's hunker, it never ejects the rider.
+// Bails come from dynamics instead: a very sudden horizontal deceleration
+// (wall, nose-catch into a slope) rips the rider off into a ragdoll, and a
+// long freefall lets the board drift loose — land with your centre of gravity
+// roughly over the wheels and you ride away, miss and you tumble or run out.
+const GRIP_FRONT = new Vector3( 0, 0.05, 0.16 );  // deck-local grip points,
+const GRIP_REAR = new Vector3( 0, 0.05, - 0.22 ); // under the rig's stance
+const NO_KEYS = new Set();   // a bailed board takes no input
 
 // --- board / truck kinematics ------------------------------------------------
-const MAX_LEAN = 0.30;         // rad of deck roll at full carve
-const MANUAL_PITCH = 0.32;     // rad of nose-up pitch while manualing
+// Geometry baked into the meshes at build time — not live-tunable
 const REAR_AXLE_Z = 0.31;      // pivot distance for the manual pitch
 const WHEEL_R = 0.03;
-// Truck pivot axes are inclined at PIVOT_ANGLE from horizontal, pointing
-// toward the board's center (front axis tips back, rear axis tips forward).
-// When the deck rolls by φ, each hanger rotates about its pivot axis by
-// ρ = atan(tan φ / cos λ) — the unique angle that keeps the axle parallel to
-// the ground — which yaws the front axle into the turn and the rear axle out
-// of it, exactly like a physical truck.
-const PIVOT_ANGLE = MathUtils.degToRad( 40 );
-const COS_PIVOT = Math.cos( PIVOT_ANGLE );
-const FRONT_PIVOT_AXIS = new Vector3( 0, Math.sin( PIVOT_ANGLE ), - COS_PIVOT );
-const REAR_PIVOT_AXIS = new Vector3( 0, Math.sin( PIVOT_ANGLE ), COS_PIVOT );
 
 const _fwd = new Vector3();
+const _v3 = new Vector3();
 const _bf = new Vector3();
 const _lat = new Vector3();
 const _acc = new Vector3();
@@ -110,7 +151,7 @@ const DOWN = new Vector3( 0, - 1, 0 );
 
 export class SkateMode {
 
-	constructor( { scene, camera, tilesGroup, playArea, park, sea, hud, audio, onExit } ) {
+	constructor( { scene, camera, tilesGroup, playArea, park, sea, hud, audio, onExit, onDismount } ) {
 
 		this.scene = scene;
 		this.camera = camera;
@@ -120,6 +161,7 @@ export class SkateMode {
 		this.sea = sea; // { level(), surfaceAt(x,z), isWater(x,z) }
 		this.hud = hud; // { root, speed, state, balanceWrap, balanceDot }
 		this.onExit = onExit;
+		this.onDismount = onDismount || null; // ( point, dir, vel ) → continue on foot
 
 		// ramps count as terrain; rails are handled by the grind state instead
 		this._rideables = park ? [ tilesGroup, park.rideable ] : [ tilesGroup ];
@@ -144,6 +186,25 @@ export class SkateMode {
 		this._jumpHeld = false;
 		this._visUp = new Vector3( 0, 1, 0 );
 		this._saved = null;
+
+		// bail state: null while riding, else { phase: 'drift' | 'flight' |
+		// 'ragdoll', pos, vel, yaw, thud } — the board keeps rolling riderless
+		// underneath; from 'drift' the rider can still land back on it
+		this.bail = null;
+		this._ragdoll = null; // built lazily on first bail
+
+		// sudden-stop detector + freefall clock for the bail triggers
+		this._refSpeed = 0;              // recent-max horizontal speed, decays
+		this._lastVel = new Vector3();   // last step's velocity, for eject direction
+		this._fallTime = 0;              // seconds spent falling this airtime
+
+		// foot grip springs: world-space foot points chasing the deck's grips
+		this.gripStrain = 0;
+		this._gripInit = false;
+		this._gripL = new Vector3();
+		this._gripR = new Vector3();
+		this._footL = { p: new Vector3(), v: new Vector3() };
+		this._footR = { p: new Vector3(), v: new Vector3() };
 
 		this._raycaster = new Raycaster();
 		this._raycaster.firstHitOnly = true;
@@ -284,6 +345,9 @@ export class SkateMode {
 		this.lastGroundY = this.pos.y;
 		this.vel.set( 0, 0, 0 );
 		if ( opts.vel ) this.vel.copy( opts.vel ); // momentum carries across modes
+		this._refSpeed = 0;
+		this._fallTime = 0;
+		this._lastVel.copy( this.vel );
 		this.yaw = Math.atan2( viewDir.x, viewDir.z );
 		this.onGround = true;
 		this.spawn.copy( this.pos );
@@ -317,6 +381,7 @@ export class SkateMode {
 
 		if ( ! this.active ) return;
 
+		this._recoverRig();
 		this.active = false;
 		this.grinding = null;
 		this.swimming = false;
@@ -346,8 +411,12 @@ export class SkateMode {
 
 	respawn() {
 
+		this._recoverRig();
 		this.pos.copy( this.spawn );
 		this.vel.set( 0, 0, 0 );
+		this._refSpeed = 0;
+		this._fallTime = 0;
+		this._lastVel.set( 0, 0, 0 );
 		this.yaw = this.spawnYaw;
 		this.onGround = true;
 		this.grinding = null;
@@ -361,7 +430,7 @@ export class SkateMode {
 	_setRideHint() {
 
 		this.hud.hint.textContent =
-			'W push · S brake · A/D carve · Shift manual · Space ollie · E step off · 1 ramp · 2 rail · U upscale · R respawn · Esc bail';
+			'W push · S brake · A/D carve · Shift manual · Space ollie · B bail · E step off · 1 ramp · 2 rail · R respawn · T tune · Esc exit';
 
 	}
 
@@ -389,7 +458,24 @@ export class SkateMode {
 		}
 
 		if ( e.code === 'Space' ) e.preventDefault();
-		if ( e.code === 'KeyR' ) this.respawn();
+
+		if ( e.code === 'KeyR' ) {
+
+			this.respawn();
+			return;
+
+		}
+
+		if ( e.code === 'KeyB' && ! this.bail && ! this.swimming ) {
+
+			this._bailJump();
+			return;
+
+		}
+
+		// no steering a board you're no longer on — but while the board is only
+		// drifting loose the keys steer the falling body back toward it
+		if ( this.bail && this.bail.phase !== 'drift' ) return;
 		this.keys.add( e.code );
 
 	}
@@ -400,9 +486,17 @@ export class SkateMode {
 
 		if ( ! this.active ) return;
 
+		// the board rolls on riderless while the rider is bailed
 		const steps = MathUtils.clamp( Math.ceil( dt / 0.02 ), 1, 5 );
 		const h = dt / steps;
 		for ( let i = 0; i < steps; i ++ ) this._physicsStep( h );
+
+		if ( this.bail ) {
+
+			this._updateBail( dt );
+			if ( ! this.active ) return; // stood up into pedestrian mode
+
+		}
 
 		this._updateBoard( dt );
 		this._updateAudio( dt );
@@ -427,7 +521,9 @@ export class SkateMode {
 
 		}
 
-		const { keys, vel } = this;
+		// while bailed the keys steer the drifting rider, never the board
+		const keys = this.bail ? NO_KEYS : this.keys;
+		const vel = this.vel;
 		const speed = vel.length();
 		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
 
@@ -480,7 +576,7 @@ export class SkateMode {
 
 				_n.copy( wall.face.normal ).transformDirection( wall.object.matrixWorld );
 				if ( _n.dot( this._raycaster.ray.direction ) > 0 ) _n.negate();
-				if ( _n.y < WALL_NORMAL_Y ) {
+				if ( _n.y < PHYSICS.wallSteep ) {
 
 					// slide along the wall: remove the velocity component into it
 					_n.y = 0;
@@ -508,7 +604,8 @@ export class SkateMode {
 			const groundY = hit.point.y;
 
 			// the segmented sea is not rigid: rolling or falling onto it swims
-			if ( this._isSeaSurface( groundY ) ) {
+			// (unless the rider has bailed — a riderless board just stops)
+			if ( ! this.bail && this._isSeaSurface( groundY ) ) {
 
 				if ( this.onGround || this.pos.y <= groundY + 0.3 ) {
 
@@ -520,12 +617,12 @@ export class SkateMode {
 			} else if ( this.onGround ) {
 
 				const dy = groundY - this.pos.y;
-				if ( dy >= - SNAP_DOWN && dy <= STEP_UP ) {
+				if ( dy >= - PHYSICS.snapDown && dy <= PHYSICS.stepUp ) {
 
 					this.pos.y = groundY; // glued: bumps, curbs, rolling terrain
 					if ( hit.worldNormal ) this.groundNormal.lerp( hit.worldNormal, 0.35 ).normalize();
 
-				} else if ( dy < - SNAP_DOWN ) {
+				} else if ( dy < - PHYSICS.snapDown ) {
 
 					this.onGround = false; // rolled off a drop
 
@@ -546,8 +643,45 @@ export class SkateMode {
 
 		}
 
-		// airborne over a rail? lock onto it
-		if ( ! this.onGround && this.park ) this._tryGrind();
+		// airborne over a rail? lock onto it (not without a rider aboard)
+		if ( ! this.onGround && this.park && ! this.bail ) this._tryGrind();
+
+		// --- bail triggers, only while the board is actually ridden ---
+		if ( ! this.bail && ! this.grinding && ! this.swimming ) {
+
+			// sudden-stop detector: a reference speed that rises instantly but
+			// decays over decelWindow — a gap means speed vanished abruptly.
+			// Braking (~9 m/s²) leaves a gap of ~1; a wall or nose-catch spikes it.
+			const hs = Math.hypot( vel.x, vel.z );
+			if ( hs >= this._refSpeed ) this._refSpeed = hs;
+			else this._refSpeed += ( hs - this._refSpeed ) * Math.min( 1, h / PHYSICS.decelWindow );
+
+			if ( this._refSpeed - hs > PHYSICS.bailDecel ) {
+
+				// the body keeps a slice of the speed the board just lost
+				_v3.set(
+					vel.x + ( this._lastVel.x - vel.x ) * 0.35,
+					Math.max( vel.y, 0 ) + 2.5,
+					vel.z + ( this._lastVel.z - vel.z ) * 0.35
+				);
+				this._bailRagdoll( _v3 );
+
+			} else if ( this.onGround ) {
+
+				this._fallTime = 0;
+
+			} else {
+
+				// long freefall: past the threshold the board drifts loose and
+				// the rider has to chase it back down
+				if ( vel.y < 0 ) this._fallTime += h;
+				if ( this._fallTime > PHYSICS.driftAfter ) this._startDrift();
+
+			}
+
+			this._lastVel.copy( vel );
+
+		}
 
 		// fell off the mesh entirely
 		if ( this.pos.y < this.lastGroundY - 400 ) this.respawn();
@@ -583,6 +717,8 @@ export class SkateMode {
 
 		this.swimming = false;
 		this.audio.setUnderwater( false );
+		this._refSpeed = 0;
+		this._fallTime = 0;
 		this._setRideHint();
 
 	}
@@ -694,6 +830,8 @@ export class SkateMode {
 
 			const sign = Math.sign( along );
 			this.grinding = { rail, s, sign, spd: Math.abs( along ) };
+			this._refSpeed = 0; // locking on sheds speed by design, not by crash
+			this._fallTime = 0;
 			this.balance = ( Math.random() - 0.5 ) * 0.4; // land slightly off-center
 			this.balanceVel = 0;
 			this.yaw = Math.atan2( rail.dir.x * sign, rail.dir.z * sign );
@@ -743,13 +881,15 @@ export class SkateMode {
 		}
 		if ( ! keys.has( 'Space' ) ) this._jumpHeld = false;
 
-		// lost it: bucked off sideways, bleeding speed
+		// lost it: bucked off sideways — the rider goes flying
 		if ( Math.abs( this.balance ) > 1 ) {
 
 			_side.crossVectors( vel, UP ).normalize();
 			this._endGrind();
-			vel.multiplyScalar( 0.55 );
-			vel.addScaledVector( _side, - Math.sign( this.balance ) * 2.5 );
+			_v3.copy( vel ).addScaledVector( _side, - Math.sign( this.balance ) * 3 );
+			_v3.y += 1.5;
+			vel.multiplyScalar( 0.4 ); // the board clatters on without you
+			this._bailRagdoll( _v3 );
 			return;
 
 		}
@@ -765,12 +905,333 @@ export class SkateMode {
 		this.balance = 0;
 		this.balanceVel = 0;
 		this.onGround = false;
+		this._refSpeed = 0;
+		this._fallTime = 0;
+
+	}
+
+	// --- foot grip + bail ---------------------------------------------------------
+
+	// Spring-integrate the two foot points toward the deck's grip targets and
+	// measure the stretch. Run after the board transform is posed for the frame.
+	_updateGrip( dt ) {
+
+		if ( this.bail || this.swimming ) {
+
+			this.gripStrain = 0;
+			this._gripInit = false;
+			return;
+
+		}
+
+		this.deck.updateWorldMatrix( true, false );
+		this._gripL.copy( GRIP_FRONT );
+		this._gripR.copy( GRIP_REAR );
+		this.deck.localToWorld( this._gripL );
+		this.deck.localToWorld( this._gripR );
+
+		if ( ! this._gripInit ) {
+
+			this._footL.p.copy( this._gripL );
+			this._footR.p.copy( this._gripR );
+			this._footL.v.copy( this.vel );
+			this._footR.v.copy( this.vel );
+			this._gripInit = true;
+
+		}
+
+		// gravity matches the phase of motion so the feet only lag under real
+		// shocks, not from the game's heavier-than-life air gravity
+		const g = this.onGround ? PHYSICS.gravity : PHYSICS.airGravity;
+
+		const steps = MathUtils.clamp( Math.ceil( dt / 0.02 ), 1, 5 );
+		const h = dt / steps;
+		for ( let i = 0; i < steps; i ++ ) {
+
+			for ( const [ foot, grip ] of [ [ this._footL, this._gripL ], [ this._footR, this._gripR ] ] ) {
+
+				_v3.subVectors( grip, foot.p ).multiplyScalar( PHYSICS.gripK );
+				_v3.addScaledVector( foot.v, - PHYSICS.gripD );
+				_v3.y -= g;
+				foot.v.addScaledVector( _v3, h );
+				foot.p.addScaledVector( foot.v, h );
+
+			}
+
+		}
+
+		this.gripStrain = Math.max(
+			this._footL.p.distanceTo( this._gripL ),
+			this._footR.p.distanceTo( this._gripR )
+		);
+
+	}
+
+	// hand the rig to the scene in place, so the body leaves the board.
+	// keys survive on purpose — the drift phase steers with them; hard bails
+	// clear them at their own call sites.
+	_detachRig() {
+
+		this.scene.attach( this.rig.group );
+		this.grinding = null;
+		this.manual = false;
+		this.gripStrain = 0;
+		this._gripInit = false;
+
+	}
+
+	// put the rig back on the deck in its riding attachment
+	_recoverRig() {
+
+		if ( ! this.bail ) return;
+
+		this.deck.add( this.rig.group );
+		this.rig.group.position.set( 0, 0.008, 0 );
+		this.rig.group.quaternion.identity();
+		this.rig.joint( 'hips' ).position.set( 0, 0.78, 0 );
+		this.bail = null;
+		this._refSpeed = 0; // fresh detector state for the new ride
+		this._fallTime = 0;
+
+	}
+
+	// B: leap off the board feet-first. Land slow and you run it out; land
+	// fast and you ragdoll — the board rolls on without you either way.
+	_bailJump() {
+
+		this._detachRig();
+		this.keys.clear();
+
+		const speed = Math.hypot( this.vel.x, this.vel.z );
+		this.bail = {
+			phase: 'flight',
+			pos: _v3.copy( this.pos ).addScaledVector( this._visUp, 0.1 ).clone(),
+			vel: this.vel.clone().setY( this.vel.y + PHYSICS.bailHop ),
+			yaw: this.yaw,
+			thud: 0,
+		};
+		this.bail.vel.addScaledVector( _fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) ), speed > 1 ? 0.5 : 0 );
+		this.audio.jump();
+		this.hud.hint.textContent = 'airborne — land slow to run it out · R respawn';
+
+	}
+
+	// a long freefall: rider and board part ways mid-air. Not a bail yet —
+	// steer the body over the wheels before touchdown and you ride away.
+	_startDrift() {
+
+		this._detachRig();
+
+		this.bail = {
+			phase: 'drift',
+			pos: _v3.copy( this.pos ).addScaledVector( this._visUp, 0.1 ).clone(),
+			vel: this.vel.clone(),
+			yaw: this.yaw,
+			thud: 0,
+		};
+
+		// the board wanders sideways, harder the faster you were going
+		const speed = Math.hypot( this.vel.x, this.vel.z );
+		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+		_side.crossVectors( _fwd, UP );
+		this.vel.addScaledVector( _side, ( Math.random() < 0.5 ? - 1 : 1 ) * ( 0.5 + speed * 0.06 ) );
+
+		this.hud.hint.textContent = 'board’s loose — W/A/S/D steer over the wheels to ride it out · R respawn';
+
+	}
+
+	// involuntary: straight to ragdoll with the given ejection velocity
+	_bailRagdoll( ejectVel ) {
+
+		if ( this.bail && this.bail.phase === 'ragdoll' ) return;
+
+		const wasAirborne = !! this.bail;
+		if ( ! wasAirborne ) this._detachRig();
+		this.keys.clear();
+
+		if ( ! this._ragdoll ) {
+
+			this._ragdoll = new SkaterRagdoll( ( x, y, z, above, far ) => this._groundHit( x, y, z, above, far ) );
+
+		}
+
+		// tumble about the lateral axis so speed reads as a somersault
+		const speed = ejectVel.length();
+		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+		_side.crossVectors( UP, _fwd );
+		_side.multiplyScalar( MathUtils.clamp( speed * 0.45, 1.5, 9 ) );
+
+		this._ragdoll.init( this.rig, ejectVel, _side );
+		this.bail = { phase: 'ragdoll', pos: null, vel: null, yaw: this.yaw, thud: 0 };
+		this.audio.land( Math.min( speed * 0.4, 4 ) );
+		this.hud.hint.textContent = 'ragdolling — R respawn';
+
+	}
+
+	_updateBail( dt ) {
+
+		const b = this.bail;
+
+		if ( b.phase === 'flight' || b.phase === 'drift' ) {
+
+			// drift only: nudge the falling body back toward the runaway board
+			if ( b.phase === 'drift' ) {
+
+				const { keys } = this;
+				const along = ( keys.has( 'KeyW' ) ? 1 : 0 ) - ( keys.has( 'KeyS' ) ? 1 : 0 );
+				const strafe = ( keys.has( 'KeyD' ) ? 1 : 0 ) - ( keys.has( 'KeyA' ) ? 1 : 0 );
+				_fwd.set( Math.sin( b.yaw ), 0, Math.cos( b.yaw ) );
+				_side.crossVectors( _fwd, UP );
+				b.vel.addScaledVector( _fwd, along * PHYSICS.airControl * dt );
+				b.vel.addScaledVector( _side, strafe * PHYSICS.airControl * dt );
+
+			}
+
+			// ballistic body, feet-first, arms windmilling
+			b.vel.y -= PHYSICS.airGravity * dt;
+			b.pos.addScaledVector( b.vel, dt );
+			if ( this.playArea ) this.playArea.constrain( b.pos, b.vel, 10 );
+
+			const rig = this.rig;
+			rig.group.position.copy( b.pos );
+			rig.group.quaternion.setFromAxisAngle( UP, b.yaw );
+			rig.update( dt, { bailing: true, grounded: false, speed: b.vel.length(), lean: 0 } );
+
+			const hit = this._groundHit( b.pos.x, b.pos.y, b.pos.z, 2, 20 );
+			if ( hit && b.pos.y <= hit.point.y ) {
+
+				b.pos.y = hit.point.y;
+				const impact = b.vel.length();
+
+				// came down over the wheels? back on the board, ride away
+				if ( b.phase === 'drift' && this._recoverLanding( b, impact ) ) return;
+
+				if ( impact > PHYSICS.ragdollAt ) {
+
+					this._bailRagdoll( b.vel ); // came in too hot
+
+				} else {
+
+					this.audio.land( Math.min( impact * 0.5, 3 ) );
+					this._standUp( hit.point, b.vel );
+
+				}
+
+			}
+
+			return;
+
+		}
+
+		// ragdoll phase
+		const rd = this._ragdoll;
+		rd.update( dt );
+		rd.poseRig( this.rig );
+
+		// bounce thuds, throttled so a slide doesn't machine-gun the audio
+		b.thud -= dt;
+		if ( rd.impact > 3 && b.thud <= 0 ) {
+
+			this.audio.land( Math.min( rd.impact * 0.4, 3.5 ) );
+			b.thud = 0.25;
+
+		}
+
+		if ( rd.settled ) {
+
+			const p = rd.pelvis;
+			const hit = this._groundHit( p.x, p.y + 1, p.z, 2, 20 );
+			this._standUp( hit ? hit.point : _v3.set( p.x, p.y - 0.5, p.z ), null );
+
+		}
+
+	}
+
+	// drift touchdown: the body's CoG came down — if it's roughly over the
+	// wheels, snap back onto the deck and keep the ride, sketchier the further
+	// off-centre the landing was
+	_recoverLanding( b, impact ) {
+
+		const dx = b.pos.x - this.pos.x;
+		const dz = b.pos.z - this.pos.z;
+		const d = Math.hypot( dx, dz );
+		if ( d > PHYSICS.recoverRadius ) return false;
+		if ( Math.abs( b.pos.y - this.pos.y ) > PHYSICS.recoverDy ) return false; // board's still falling / already gone
+
+		// the ride continues at the faster of body / board pace
+		const boardH = Math.hypot( this.vel.x, this.vel.z );
+		const bodyH = Math.hypot( b.vel.x, b.vel.z );
+		if ( bodyH > boardH ) {
+
+			if ( boardH > 0.5 ) {
+
+				const k = bodyH / boardH;
+				this.vel.x *= k;
+				this.vel.z *= k;
+
+			} else {
+
+				this.vel.x = b.vel.x;
+				this.vel.z = b.vel.z;
+
+			}
+
+		}
+
+		// sell the near-miss: scrub speed and dip the deck toward the side you hit
+		const sketch = d / PHYSICS.recoverRadius;
+		const pen = 1 - 0.25 * sketch;
+		this.vel.x *= pen;
+		this.vel.z *= pen;
+		if ( d > 1e-3 ) {
+
+			_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+			_side.crossVectors( _fwd, UP );
+			this._lean += ( ( dx * _side.x + dz * _side.z ) / d ) * 0.4 * sketch;
+
+		}
+
+		this._recoverRig();
+		this.audio.land( Math.min( impact * 0.5, 3 ) );
+		this._setRideHint();
+		return true;
+
+	}
+
+	// back on your feet: hand off to pedestrian mode with whatever momentum
+	// survived, or — with no handoff wired — remount the board where you stand
+	_standUp( point, vel ) {
+
+		// clone up front — point may arrive in a shared scratch vector
+		const at = point.clone();
+		const carry = vel ? new Vector3( vel.x, 0, vel.z ) : new Vector3();
+
+		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
+		if ( vel && Math.hypot( vel.x, vel.z ) > 0.5 ) _fwd.set( vel.x, 0, vel.z ).normalize();
+
+		this._recoverRig();
+
+		if ( this.onDismount ) {
+
+			const dir = _fwd.clone();
+			this.exit( true );
+			this.onDismount( at, dir, carry );
+
+		} else {
+
+			this.pos.copy( at );
+			this.vel.set( 0, 0, 0 );
+			this.onGround = true;
+			this._setRideHint();
+
+		}
 
 	}
 
 	_applyGroundForces( h, fwd, speed ) {
 
-		const { vel, keys } = this;
+		const vel = this.vel;
+		const keys = this.bail ? NO_KEYS : this.keys; // drift keys steer the body only
 		const n = this.groundNormal;
 
 		// gravity projected onto the ground plane — hills accelerate you
@@ -828,14 +1289,15 @@ export class SkateMode {
 		this.board.position.copy( this.pos );
 
 		// deck roll from steering input, scaled up with speed; while grinding
-		// the roll is the balance wobble itself
-		const turn = ( this.keys.has( 'KeyA' ) ? 1 : 0 ) - ( this.keys.has( 'KeyD' ) ? 1 : 0 );
+		// the roll is the balance wobble itself; a bailed board takes no input
+		const turn = this.bail ? 0
+			: ( this.keys.has( 'KeyA' ) ? 1 : 0 ) - ( this.keys.has( 'KeyD' ) ? 1 : 0 );
 		const speed = this.vel.length();
 		const leanTarget = this.grinding
-			? this.balance * MAX_LEAN * 1.3
+			? this.balance * PHYSICS.maxLean * 1.3
 			: this.onGround
-				? turn * Math.min( speed / 9, 1 ) * MAX_LEAN
-				: turn * MAX_LEAN * 0.4;
+				? turn * Math.min( speed / 9, 1 ) * PHYSICS.maxLean
+				: turn * PHYSICS.maxLean * 0.4;
 		this._lean += ( leanTarget - this._lean ) * ( 1 - Math.exp( - 7 * dt ) );
 		this.deck.rotation.z = this._lean;
 
@@ -844,16 +1306,23 @@ export class SkateMode {
 		// swimming: the nose follows the dive/climb direction instead
 		const pitchTarget = this.swimming
 			? MathUtils.clamp( this.vel.y * 0.12, - 0.5, 0.5 )
-			: this.manual ? MANUAL_PITCH : 0;
+			: this.manual ? PHYSICS.manualPitch : 0;
 		this._pitch += ( pitchTarget - this._pitch ) * ( 1 - Math.exp( - 10 * dt ) );
 		this.deck.rotation.x = - this._pitch;
 		this.board.position.addScaledVector( this._visUp, Math.sin( this._pitch ) * REAR_AXLE_Z );
 
-		// truck kinematics: hangers rotate about their pivot axes by the angle
-		// that keeps the axles level under the rolled deck
-		const rho = Math.atan( Math.tan( this._lean ) / COS_PIVOT );
-		this.hangers.front.quaternion.setFromAxisAngle( FRONT_PIVOT_AXIS, rho );
-		this.hangers.rear.quaternion.setFromAxisAngle( REAR_PIVOT_AXIS, - rho );
+		// Truck kinematics. The pivot axes are inclined at pivotAngle from
+		// horizontal, pointing toward the board's center (front tips back, rear
+		// tips forward). When the deck rolls by φ each hanger rotates about its
+		// axis by ρ = atan(tan φ / cos λ) — the unique angle that keeps the
+		// axle parallel to the ground — yawing the front axle into the turn and
+		// the rear out of it. Rebuilt each frame so the panel angle applies live.
+		const lam = MathUtils.degToRad( PHYSICS.pivotAngle );
+		const sinP = Math.sin( lam );
+		const cosP = Math.cos( lam );
+		const rho = Math.atan( Math.tan( this._lean ) / cosP );
+		this.hangers.front.quaternion.setFromAxisAngle( _v3.set( 0, sinP, - cosP ), rho );
+		this.hangers.rear.quaternion.setFromAxisAngle( _v3.set( 0, sinP, cosP ), - rho );
 
 		// wheel spin from signed forward travel
 		if ( this.onGround ) {
@@ -864,17 +1333,26 @@ export class SkateMode {
 
 		}
 
-		// rider animation
-		this.rig.update( dt, {
-			grounded: this.onGround,
-			speed,
-			swimming: this.swimming,
-			grinding: !! this.grinding,
-			manual: this.manual,
-			pushing: this.onGround && this.keys.has( 'KeyW' ),
-			braking: this.onGround && this.keys.has( 'KeyS' ) && speed > 0.3,
-			lean: this._lean,
-		} );
+		// foot grip springs chase the freshly posed deck — animation only,
+		// the stretch feeds the rig's hunker
+		this._updateGrip( dt );
+
+		// rider animation — while bailed the rig is posed by drift / flight / ragdoll
+		if ( ! this.bail ) {
+
+			this.rig.update( dt, {
+				grounded: this.onGround,
+				speed,
+				swimming: this.swimming,
+				grinding: !! this.grinding,
+				manual: this.manual,
+				pushing: this.onGround && this.keys.has( 'KeyW' ),
+				braking: this.onGround && this.keys.has( 'KeyS' ) && speed > 0.3,
+				lean: this._lean,
+				gripStrain: this.gripStrain,
+			} );
+
+		}
 
 		// contact shadow fades with height
 		const height = Math.max( 0, this.pos.y - this.lastGroundY );
@@ -900,22 +1378,26 @@ export class SkateMode {
 			grinding: !! this.grinding,
 			speed,
 			slip,
-			pushing: this.onGround && this.keys.has( 'KeyW' ),
-			braking: this.onGround && this.keys.has( 'KeyS' ) && speed > 0.3,
+			pushing: ! this.bail && this.onGround && this.keys.has( 'KeyW' ),
+			braking: ! this.bail && this.onGround && this.keys.has( 'KeyS' ) && speed > 0.3,
 		} );
 
 	}
 
 	_updateCamera( dt, snap ) {
 
+		// while bailed the camera stays with the body, not the runaway board
+		const focus = ! this.bail ? this.pos
+			: this.bail.phase === 'ragdoll' ? this._ragdoll.pelvis : this.bail.pos;
+
 		const speed = this.vel.length();
 		_fwd.set( Math.sin( this.yaw ), 0, Math.cos( this.yaw ) );
 
 		// tight framing on the board and rider, easing back with speed
 		const dist = 3.3 + speed * 0.10;
-		_desired.copy( this.pos )
+		_desired.copy( focus )
 			.addScaledVector( _fwd, - dist )
-			.setY( this.pos.y + 1.6 + speed * 0.03 );
+			.setY( focus.y + 1.6 + speed * 0.03 );
 
 		// keep the camera above the terrain behind the skater
 		const g = this._groundHit( _desired.x, _desired.y, _desired.z, 6, 30 );
@@ -931,8 +1413,8 @@ export class SkateMode {
 
 		}
 
-		_look.copy( this.pos ).addScaledVector( _fwd, 1.4 );
-		_look.y += 1.05;
+		_look.copy( focus ).addScaledVector( _fwd, this.bail ? 0.3 : 1.4 );
+		_look.y += this.bail ? 0.5 : 1.05;
 		this.camera.lookAt( _look );
 
 	}
@@ -941,11 +1423,14 @@ export class SkateMode {
 
 		const mph = Math.round( this.vel.length() * 2.237 );
 		this.hud.speed.textContent = mph;
-		this.hud.state.textContent = this.swimming
-			? ( this.sea && this.pos.y < this.sea.level() - 0.6 ? 'DIVE' : 'SWIM' )
-			: this.grinding ? 'GRIND'
-				: ! this.onGround ? 'AIR'
-					: this.manual ? 'MANUAL' : '';
+		this.hud.state.textContent = this.bail
+			? ( this.bail.phase === 'drift' ? 'DRIFT'
+				: this.bail.phase === 'flight' ? 'BAIL' : 'RAGDOLL' )
+			: this.swimming
+				? ( this.sea && this.pos.y < this.sea.level() - 0.6 ? 'DIVE' : 'SWIM' )
+				: this.grinding ? 'GRIND'
+					: ! this.onGround ? 'AIR'
+						: this.manual ? 'MANUAL' : '';
 
 		this.hud.balanceWrap.classList.toggle( 'hidden', ! this.grinding );
 		if ( this.grinding ) {

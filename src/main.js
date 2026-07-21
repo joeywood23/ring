@@ -21,10 +21,11 @@ import {
 	ReorientationPlugin,
 } from '3d-tiles-renderer/plugins';
 import { distortionUniforms, patchMaterial, patchRollOnly, EFFECTS, COLOR_MODES } from './effects.js';
-import { AREAS, currentArea, selectArea } from './areas.js';
+import { AREAS, currentArea, selectArea, mapScale, setMapScale, MAP_SCALE_RANGE } from './areas.js';
 import { LOCATIONS, cameraGeoForLocation } from './locations.js';
 import { Minimap } from './minimap.js';
 import { SkateMode, ensureBVH, PHYSICS, PHYSICS_CONTROLS } from './skate.js';
+import { RAGDOLL, RAGDOLL_CONTROLS } from './ragdoll.js';
 import { SkatePark } from './props.js';
 import { PedestrianMode } from './walk.js';
 import { PigeonMode } from './fly.js';
@@ -36,7 +37,7 @@ import { DetailOverlay } from './detail.js';
 import { Segmentation } from './segment.js';
 import { VoxelWorld } from './voxel.js';
 import { WaterLayer } from './water.js';
-import { CylinderRoll, RollLODPlugin, createHullMesh } from './roll.js';
+import { CylinderRoll, RollLODPlugin, createHullMesh, AxisLight } from './roll.js';
 import { StarField } from './stars.js';
 
 const KEY_STORAGE = 'ring_google_tiles_key';
@@ -59,7 +60,7 @@ const state = {
 	upscale: localStorage.getItem( 'ring_upscale' ) === '1', // shelved: off unless opted in
 };
 
-let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, sail, targeter, detail, park, segments, voxels, water, stars;
+let renderer, camera, scene, tiles, controls, minimap, skate, walker, pigeon, sail, targeter, detail, park, segments, voxels, water, stars, axisLight;
 const roll = new CylinderRoll();
 const rollLOD = new RollLODPlugin( roll );
 let dropAs = 'skate'; // which mode the pending drop-in enters
@@ -191,6 +192,8 @@ function init( apiKey ) {
 		scene.add( createHullMesh( playArea, AREA.groundY ) ); // opaque shell for god view
 		stars = new StarField( playArea, roll.radius, AREA.groundY );
 		scene.add( stars.group );
+		axisLight = new AxisLight( playArea, roll.radius ); // sun rod on the hub axis
+		scene.add( axisLight.group );
 		if ( ! WATER_DISABLED ) water.start(); // fetches coverage, then floods the segmented sea
 
 		// ?roll=0..1 overrides the curl amount (handy for comparisons)
@@ -266,6 +269,8 @@ function init( apiKey ) {
 		hud,
 		tilesGroup: tiles.group,
 		onExit: onModeExit,
+		// a survived bail continues on foot with whatever momentum is left
+		onDismount: ( point, dir, vel ) => walker.enter( point, dir, { vel, snapCamera: false } ),
 	} );
 
 	walker = new PedestrianMode( {
@@ -557,7 +562,7 @@ function enterModeAt( point ) {
 function toggleBoard() {
 
 	const cur = groundMode();
-	if ( ! cur || cur === pigeon || ! cur.onGround || cur.grinding ) return;
+	if ( ! cur || cur === pigeon || cur.bail || ! cur.onGround || cur.grinding ) return;
 
 	const point = cur.pos.clone();
 	const vel = cur.vel.clone();
@@ -702,6 +707,7 @@ function animate() {
 	// sea level is the cylinder shell radius reference once it's calibrated
 	roll.setGround( water && water.seaY !== null ? water.seaY : AREA.groundY );
 	roll.update( dt ); // also advances the habitat spin; the stars stay fixed
+	if ( axisLight ) axisLight.update( roll.u );
 	syncRollUI();
 
 	const mode = groundMode();
@@ -868,59 +874,98 @@ function buildButtonGroup( containerId, items, onSelect, activeIndex = 0 ) {
 
 }
 
-// One slider per PHYSICS property, live-updating the simulation while riding.
+// One slider per tunable, live-updating the simulation while riding. Specs
+// interleave bare strings as section labels; each group binds to its own
+// live object (skate PHYSICS, ragdoll RAGDOLL).
 function buildPhysicsControls() {
 
 	const container = document.getElementById( 'physics-controls' );
-	const defaults = { ...PHYSICS };
 	const rows = [];
 
-	for ( const [ key, label, min, max, step ] of PHYSICS_CONTROLS ) {
+	for ( const { obj, spec } of [
+		{ obj: PHYSICS, spec: PHYSICS_CONTROLS },
+		{ obj: RAGDOLL, spec: RAGDOLL_CONTROLS },
+	] ) {
 
-		const row = document.createElement( 'label' );
-		row.className = 'slider-row';
+		const defaults = { ...obj };
 
-		const name = document.createElement( 'span' );
-		name.textContent = label;
+		for ( const entry of spec ) {
 
-		const input = document.createElement( 'input' );
-		input.type = 'range';
-		input.min = min;
-		input.max = max;
-		input.step = step;
-		input.value = PHYSICS[ key ];
+			if ( typeof entry === 'string' ) {
 
-		const val = document.createElement( 'span' );
-		val.className = 'slider-val';
-		const decimals = ( String( step ).split( '.' )[ 1 ] || '' ).length;
-		const show = () => ( val.textContent = PHYSICS[ key ].toFixed( decimals ) );
-		show();
+				const head = document.createElement( 'div' );
+				head.className = 'slider-group';
+				head.textContent = entry;
+				container.appendChild( head );
+				continue;
 
-		input.addEventListener( 'input', () => {
+			}
 
-			PHYSICS[ key ] = parseFloat( input.value );
+			const [ key, label, min, max, step ] = entry;
+
+			const row = document.createElement( 'label' );
+			row.className = 'slider-row';
+
+			const name = document.createElement( 'span' );
+			name.textContent = label;
+
+			const input = document.createElement( 'input' );
+			input.type = 'range';
+			input.min = min;
+			input.max = max;
+			input.step = step;
+			input.value = obj[ key ];
+
+			const val = document.createElement( 'span' );
+			val.className = 'slider-val';
+			const decimals = ( String( step ).split( '.' )[ 1 ] || '' ).length;
+			const show = () => ( val.textContent = obj[ key ].toFixed( decimals ) );
 			show();
 
-		} );
-		// release focus so WASD isn't swallowed by the slider while skating
-		input.addEventListener( 'change', () => input.blur() );
+			input.addEventListener( 'input', () => {
 
-		row.append( name, input, val );
-		container.appendChild( row );
-		rows.push( { key, input, show } );
+				obj[ key ] = parseFloat( input.value );
+				show();
+
+			} );
+			// release focus so WASD isn't swallowed by the slider while skating
+			input.addEventListener( 'change', () => input.blur() );
+
+			row.append( name, input, val );
+			container.appendChild( row );
+			rows.push( { obj, defaults, key, input, show } );
+
+		}
 
 	}
 
 	document.getElementById( 'physics-reset' ).addEventListener( 'click', ( e ) => {
 
-		for ( const { key, input, show } of rows ) {
+		for ( const { obj, defaults, key, input, show } of rows ) {
 
-			PHYSICS[ key ] = defaults[ key ];
+			obj[ key ] = defaults[ key ];
 			input.value = defaults[ key ];
 			show();
 
 		}
 		e.target.blur();
+
+	} );
+
+	// the tune panel opens anywhere — god view or mid-ride — with T or the button
+	const tunePanel = document.getElementById( 'tune-panel' );
+	const toggleTune = () => tunePanel.classList.toggle( 'hidden' );
+	document.getElementById( 'drop-tune' ).addEventListener( 'click', ( e ) => {
+
+		toggleTune();
+		e.target.blur();
+
+	} );
+	window.addEventListener( 'keydown', ( e ) => {
+
+		if ( e.code !== 'KeyT' ) return;
+		if ( e.target && e.target.tagName === 'INPUT' ) return;
+		toggleTune();
 
 	} );
 
@@ -1109,6 +1154,38 @@ function bindAreaMenu() {
 		menu.appendChild( item );
 
 	}
+
+	// map scale: pick a size (100% = the original footprint), then regenerate —
+	// the map reloads re-centered on the same point at the new size
+	const scaleRow = document.createElement( 'div' );
+	scaleRow.className = 'scale-row';
+
+	const slider = document.createElement( 'input' );
+	slider.type = 'range';
+	slider.min = MAP_SCALE_RANGE.min;
+	slider.max = MAP_SCALE_RANGE.max;
+	slider.step = 1;
+	slider.value = mapScale();
+
+	const val = document.createElement( 'span' );
+	val.className = 'scale-val';
+
+	const gen = document.createElement( 'button' );
+	gen.id = 'scale-gen';
+	gen.textContent = 'Generate map';
+
+	const sync = () => {
+
+		val.textContent = `${ slider.value }%`;
+		gen.disabled = parseInt( slider.value, 10 ) === mapScale();
+
+	};
+	sync();
+	slider.addEventListener( 'input', sync );
+	gen.addEventListener( 'click', () => setMapScale( parseInt( slider.value, 10 ) ) );
+
+	scaleRow.append( slider, val );
+	menu.append( scaleRow, gen );
 
 	btn.addEventListener( 'click', ( e ) => {
 

@@ -93,12 +93,6 @@
     </div>
 
     <div class="section">
-      <div class="section-title">Skate physics</div>
-      <div id="physics-controls"></div>
-      <button id="physics-reset">Reset defaults</button>
-    </div>
-
-    <div class="section">
       <div class="section-title">Distort</div>
       <div id="effects" class="btn-grid"></div>
     </div>
@@ -139,10 +133,18 @@
     <button id="drop-skate" class="drop-btn">Skate</button>
     <button id="drop-pigeon" class="drop-btn">Pigeon</button>
     <button id="drop-sail" class="drop-btn">Sail</button>
+    <button id="drop-tune" class="drop-btn" title="Live physics tuning (T)">Tune</button>
     <div id="roll-ctl" title="Roll the Bay into an O'Neill cylinder">
       <button id="drop-roll" class="drop-btn roll-btn">🛰 O’Neill</button>
       <input id="roll-slider" type="range" min="0" max="1" step="0.001" value="0" />
     </div>
+  </div>
+
+  <!-- live physics tuning — the T key or the Tune button toggles it, in game too -->
+  <div id="tune-panel" class="hidden">
+    <div class="section-title">Skate tuning — live</div>
+    <div id="physics-controls"></div>
+    <button id="physics-reset">Reset defaults</button>
   </div>
 
   <div id="minimap" class="hidden" title="Click anywhere to fly there">
